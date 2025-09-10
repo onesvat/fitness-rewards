@@ -17,15 +17,6 @@ const char* apiKey = "your-secret-api-key-123";  // Must match the server's API 
 // Specify which GPIO pin you connected to
 #define SENSOR_PIN 23
 
-// -- State Management --
-enum WorkoutState {
-  STOPPED,
-  RUNNING,
-  PAUSED
-};
-WorkoutState currentWorkoutState = STOPPED;
-String workoutId = "";
-
 // volatile: Indicates that this variable can be changed within an interrupt.
 volatile unsigned long revolutionCounter = 0;
 volatile unsigned long lastInterruptTime = 0;
@@ -38,8 +29,7 @@ unsigned long lastWiFiCheckTime = 0;
 void ICACHE_RAM_ATTR revolutionDetected();
 void setupWiFi();
 void ensureWiFiConnected();
-bool sendWebhook(String event, int count = 0);
-void handleWorkoutState();
+bool sendWebhook(int count = 0);
 void handleRevolutionSending();
 
 // -- Interrupt Service Routine --
@@ -84,17 +74,14 @@ void ensureWiFiConnected() {
     }
 }
 
-bool sendWebhook(String event, int count = 0) {
+bool sendWebhook(int count = 0) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected. Cannot send webhook.");
     return false;
   }
 
   HTTPClient http;
-  String url = String(webhookUrl) + "?deviceId=" + String(deviceId) + "&workoutId=" + workoutId + "&event=" + event;
-  if (event == "revolution_add" && count > 0) {
-    url += "&count=" + String(count);
-  }
+  String url = String(webhookUrl) + "?name=" + deviceId + "&count=" + String(count);
 
   http.begin(url);
   
@@ -130,47 +117,6 @@ void setup() {
   Serial.println("Setup complete. Waiting for workout to start...");
 }
 
-void handleWorkoutState() {
-  unsigned long currentTime = millis();
-  // Check if a revolution has happened since the last state check
-  bool activityDetected = lastInterruptTime > 0 && lastInterruptTime > (currentTime - PAUSE_TIMEOUT);
-
-  switch (currentWorkoutState) {
-    case STOPPED:
-      if (activityDetected) {
-        currentWorkoutState = RUNNING;
-        workoutId = String(currentTime); // New workout ID
-        Serial.println("Workout Started!");
-        sendWebhook("started");
-      }
-      break;
-
-    case PAUSED:
-      if (activityDetected) {
-        currentWorkoutState = RUNNING;
-        Serial.println("Workout Resumed!");
-        sendWebhook("resumed");
-      } else if (currentTime - lastInterruptTime > STOP_TIMEOUT) {
-        currentWorkoutState = STOPPED;
-        Serial.println("Workout Stopped.");
-        sendWebhook("stopped");
-        // Reset for next workout
-        workoutId = "";
-        revolutionCounter = 0;
-        lastInterruptTime = 0;
-      }
-      break;
-
-    case RUNNING:
-      if (currentTime - lastInterruptTime > PAUSE_TIMEOUT && lastInterruptTime > 0) {
-        currentWorkoutState = PAUSED;
-        Serial.println("Workout Paused.");
-        sendWebhook("paused");
-      }
-      break;
-  }
-}
-
 void handleRevolutionSending() {
   unsigned long currentTime = millis();
   if (currentWorkoutState != STOPPED && (currentTime - lastRevolutionSendTime > REVOLUTION_SEND_INTERVAL)) {
@@ -179,7 +125,7 @@ void handleRevolutionSending() {
     interrupts();
 
     if (countToSend > 0) {
-      if (sendWebhook("revolution_add", countToSend)) {
+      if (sendWebhook(countToSend)) {
         // Webhook successful, subtract the sent count from the total
         noInterrupts();
         revolutionCounter -= countToSend;
@@ -195,7 +141,6 @@ void handleRevolutionSending() {
 
 void loop() {
   ensureWiFiConnected();
-  handleWorkoutState();
   handleRevolutionSending();
   
   // A small delay to keep the loop from running too fast and allow the ESP32 to handle background tasks.

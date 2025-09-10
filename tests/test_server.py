@@ -4,7 +4,6 @@ Comprehensive tests for the Fitness Rewards API.
 This test suite covers all endpoints and functions in server.py, including:
 - Authentication
 - Database operations
-- Workout event logging
 - Balance management
 - Transaction tracking
 - Error handling
@@ -21,11 +20,17 @@ import json
 import tempfile
 import os
 
-# Import the app and dependencies from server.py
-from server import (
-    app, get_db, Base, WorkoutEvent, Balance, Transaction,
-    verify_api_key, API_KEY
+# Import the app and dependencies from the new structure
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from fitness_rewards.main import app
+from fitness_rewards.models.database import (
+    get_db, Base, Balance, Transaction, ChatRegistration
 )
+from fitness_rewards.api.auth import verify_api_key
+from fitness_rewards.config import API_KEY
 
 
 # Test database setup
@@ -102,217 +107,6 @@ class TestAuthentication:
         assert response.status_code == 401
         assert "Invalid API key" in response.json()["detail"]
 
-
-class TestWebhookEndpoint:
-    """Test the /webhook endpoint for receiving workout events."""
-    
-    def test_valid_workout_started(self, client, auth_headers, db_session):
-        """Test logging a valid 'started' event."""
-        params = {
-            "deviceId": "esp32-001",
-            "workoutId": 1632345600,
-            "event": "started"
-        }
-        response = client.get("/webhook", params=params, headers=auth_headers)
-        
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "success"
-        assert "logged_event_id" in data
-        
-        # Verify database entry
-        event = db_session.query(WorkoutEvent).filter_by(id=data["logged_event_id"]).first()
-        assert event is not None
-        assert event.device_id == "esp32-001"
-        assert event.workout_id == 1632345600
-        assert event.event == "started"
-        assert event.count is None
-    
-    def test_valid_revolution_add(self, client, auth_headers, db_session):
-        """Test logging a valid 'revolution_add' event with automatic point deposit."""
-        # Initialize balance
-        balance = Balance(total_points=10)
-        db_session.add(balance)
-        db_session.commit()
-        
-        params = {
-            "deviceId": "esp32-001",
-            "workoutId": 1632345600,
-            "event": "revolution_add",
-            "count": 5
-        }
-        response = client.get("/webhook", params=params, headers=auth_headers)
-        
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "success"
-        
-        # Verify workout event
-        event = db_session.query(WorkoutEvent).filter_by(id=data["logged_event_id"]).first()
-        assert event.count == 5
-        
-        # Verify balance was updated
-        updated_balance = db_session.query(Balance).first()
-        assert updated_balance.total_points == 15
-        
-        # Verify transaction was recorded
-        transaction = db_session.query(Transaction).filter_by(type="deposit").first()
-        assert transaction is not None
-        assert transaction.count == 5
-        assert transaction.name == "workout"
-        assert transaction.balance_after == 15
-    
-    def test_invalid_event_type(self, client, auth_headers):
-        """Test that invalid event types are rejected."""
-        params = {
-            "deviceId": "esp32-001",
-            "workoutId": 1632345600,
-            "event": "invalid_event"
-        }
-        response = client.get("/webhook", params=params, headers=auth_headers)
-        
-        assert response.status_code == 400
-        assert "Invalid event type" in response.json()["detail"]
-    
-    def test_revolution_add_without_count(self, client, auth_headers):
-        """Test that revolution_add without count parameter fails."""
-        params = {
-            "deviceId": "esp32-001",
-            "workoutId": 1632345600,
-            "event": "revolution_add"
-        }
-        response = client.get("/webhook", params=params, headers=auth_headers)
-        
-        assert response.status_code == 400
-        assert "count" in response.json()["detail"]
-    
-    def test_multiple_events_same_workout(self, client, auth_headers, db_session):
-        """Test logging multiple events for the same workout."""
-        workout_id = 1632345600
-        events = [
-            {"event": "started"},
-            {"event": "revolution_add", "count": 3},
-            {"event": "paused"},
-            {"event": "resumed"},
-            {"event": "revolution_add", "count": 7},
-            {"event": "stopped"}
-        ]
-        
-        for event_data in events:
-            params = {
-                "deviceId": "esp32-001",
-                "workoutId": workout_id,
-                **event_data
-            }
-            response = client.get("/webhook", params=params, headers=auth_headers)
-            assert response.status_code == 200
-        
-        # Verify all events were recorded
-        recorded_events = db_session.query(WorkoutEvent).filter_by(workout_id=workout_id).all()
-        assert len(recorded_events) == 6
-
-
-class TestWorkoutsEndpoint:
-    """Test the /workouts endpoint for retrieving workout analytics."""
-    
-    def setup_sample_workouts(self, db_session):
-        """Create sample workout data for testing."""
-        # Workout 1: Complete workout
-        events1 = [
-            WorkoutEvent(device_id="esp32-001", workout_id=1001, event="started", 
-                        timestamp=datetime(2024, 1, 15, 10, 0, 0)),
-            WorkoutEvent(device_id="esp32-001", workout_id=1001, event="revolution_add", 
-                        count=10, timestamp=datetime(2024, 1, 15, 10, 5, 0)),
-            WorkoutEvent(device_id="esp32-001", workout_id=1001, event="revolution_add", 
-                        count=15, timestamp=datetime(2024, 1, 15, 10, 10, 0)),
-            WorkoutEvent(device_id="esp32-001", workout_id=1001, event="stopped", 
-                        timestamp=datetime(2024, 1, 15, 10, 20, 0))
-        ]
-        
-        # Workout 2: Different device, same day
-        events2 = [
-            WorkoutEvent(device_id="esp32-002", workout_id=1002, event="started", 
-                        timestamp=datetime(2024, 1, 15, 14, 0, 0)),
-            WorkoutEvent(device_id="esp32-002", workout_id=1002, event="revolution_add", 
-                        count=20, timestamp=datetime(2024, 1, 15, 14, 10, 0)),
-            WorkoutEvent(device_id="esp32-002", workout_id=1002, event="stopped", 
-                        timestamp=datetime(2024, 1, 15, 14, 25, 0))
-        ]
-        
-        # Workout 3: Different day
-        events3 = [
-            WorkoutEvent(device_id="esp32-001", workout_id=1003, event="started", 
-                        timestamp=datetime(2024, 1, 16, 9, 0, 0)),
-            WorkoutEvent(device_id="esp32-001", workout_id=1003, event="revolution_add", 
-                        count=5, timestamp=datetime(2024, 1, 16, 9, 15, 0))
-            # Note: No stopped event (incomplete workout)
-        ]
-        
-        all_events = events1 + events2 + events3
-        for event in all_events:
-            db_session.add(event)
-        db_session.commit()
-    
-    def test_get_workouts_single_day(self, client, auth_headers, db_session):
-        """Test retrieving workouts for a single day."""
-        self.setup_sample_workouts(db_session)
-        
-        params = {"start_date": "2024-01-15"}
-        response = client.get("/workouts", params=params, headers=auth_headers)
-        
-        assert response.status_code == 200
-        workouts = response.json()
-        # Should return 2 workouts: 1001 and 1002 are on 2024-01-15, 1003 is on 2024-01-16 but included due to default end_date
-        # Let's filter by checking start_datetime instead
-        workouts_on_15th = [w for w in workouts if w["start_datetime"] and "2024-01-15" in w["start_datetime"]]
-        assert len(workouts_on_15th) == 2  # Two workouts on 2024-01-15
-        
-        # Check workout 1
-        workout1 = next(w for w in workouts_on_15th if w["workout_id"] == 1001)
-        assert workout1["device_id"] == "esp32-001"
-        assert workout1["cycles"] == 25  # 10 + 15
-        assert workout1["duration"] == 1200  # 20 minutes = 1200 seconds
-        assert workout1["start_datetime"] is not None
-        assert workout1["end_datetime"] is not None
-    
-    def test_get_workouts_date_range(self, client, auth_headers, db_session):
-        """Test retrieving workouts for a date range."""
-        self.setup_sample_workouts(db_session)
-        
-        params = {
-            "start_date": "2024-01-15",
-            "end_date": "2024-01-16"
-        }
-        response = client.get("/workouts", params=params, headers=auth_headers)
-        
-        assert response.status_code == 200
-        workouts = response.json()
-        assert len(workouts) == 3  # All three workouts
-    
-    def test_get_workouts_device_filter(self, client, auth_headers, db_session):
-        """Test filtering workouts by device ID."""
-        self.setup_sample_workouts(db_session)
-        
-        params = {
-            "start_date": "2024-01-15",
-            "end_date": "2024-01-15",  # Limit to exact date
-            "device_id": "esp32-001"
-        }
-        response = client.get("/workouts", params=params, headers=auth_headers)
-        
-        assert response.status_code == 200
-        workouts = response.json()
-        assert len(workouts) == 1  # Only one workout for esp32-001 on 2024-01-15
-        assert workouts[0]["device_id"] == "esp32-001"
-    
-    def test_get_workouts_no_data(self, client, auth_headers, db_session):
-        """Test retrieving workouts when no data exists."""
-        params = {"start_date": "2024-01-01"}
-        response = client.get("/workouts", params=params, headers=auth_headers)
-        
-        assert response.status_code == 200
-        workouts = response.json()
-        assert workouts == []
 
 
 class TestBalanceEndpoint:
@@ -550,96 +344,94 @@ class TestTransactionsEndpoint:
         assert transactions == []
 
 
+class TestHealthEndpoint:
+    """Test the /health endpoint."""
+    
+    def test_health_check(self, client):
+        """Test that health endpoint returns healthy status."""
+        response = client.get("/health")
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert "timestamp" in data
+
+
 class TestIntegrationScenarios:
     """Test complete workflow scenarios."""
     
-    def test_complete_workout_flow(self, client, auth_headers, db_session):
-        """Test a complete workout flow from start to finish."""
-        # Initialize balance first
-        balance = Balance(total_points=0)
-        db_session.add(balance)
-        db_session.commit()
-        
-        # 1. Start workout
-        params = {"deviceId": "esp32-001", "workoutId": 1000, "event": "started"}
-        response = client.get("/webhook", params=params, headers=auth_headers)
-        assert response.status_code == 200
-        
-        # 2. Add some revolutions
-        for i in range(3):
-            params = {"deviceId": "esp32-001", "workoutId": 1000, "event": "revolution_add", "count": 10}
-            response = client.get("/webhook", params=params, headers=auth_headers)
-            assert response.status_code == 200
-        
-        # 3. Pause and resume
-        params = {"deviceId": "esp32-001", "workoutId": 1000, "event": "paused"}
-        response = client.get("/webhook", params=params, headers=auth_headers)
-        assert response.status_code == 200
-        
-        params = {"deviceId": "esp32-001", "workoutId": 1000, "event": "resumed"}
-        response = client.get("/webhook", params=params, headers=auth_headers)
-        assert response.status_code == 200
-        
-        # 4. Add more revolutions and stop
-        params = {"deviceId": "esp32-001", "workoutId": 1000, "event": "revolution_add", "count": 15}
-        response = client.get("/webhook", params=params, headers=auth_headers)
-        assert response.status_code == 200
-        
-        params = {"deviceId": "esp32-001", "workoutId": 1000, "event": "stopped"}
-        response = client.get("/webhook", params=params, headers=auth_headers)
-        assert response.status_code == 200
-        
-        # 5. Check balance (should have 45 points: 3*10 + 15)
+    def test_complete_balance_flow(self, client, auth_headers, db_session):
+        """Test a complete balance management flow."""
+        # 1. Check initial balance (should be 0)
         response = client.get("/balance", headers=auth_headers)
         assert response.status_code == 200
-        assert response.json()["balance"] == 45
+        assert response.json()["balance"] == 0
         
-        # 6. Check transactions (should have 4 deposits)
+        # 2. Deposit some points manually
+        params = {"name": "bonus", "count": 100}
+        response = client.get("/deposit", params=params, headers=auth_headers)
+        assert response.status_code == 200
+        assert response.json()["balance_total"] == 100
+        
+        # 3. Check balance after deposit
+        response = client.get("/balance", headers=auth_headers)
+        assert response.status_code == 200
+        assert response.json()["balance"] == 100
+        
+        # 4. Withdraw some points
+        params = {"name": "gaming", "count": 30}
+        response = client.get("/withdraw", params=params, headers=auth_headers)
+        assert response.status_code == 200
+        assert response.json()["balance_remaining"] == 70
+        
+        # 5. Deposit more points
+        params = {"name": "reward", "count": 25}
+        response = client.get("/deposit", params=params, headers=auth_headers)
+        assert response.status_code == 200
+        assert response.json()["balance_total"] == 95
+        
+        # 6. Check transactions (should have 3 total: 2 deposits, 1 withdrawal)
         response = client.get("/transactions", headers=auth_headers)
         assert response.status_code == 200
         transactions = response.json()
-        deposit_transactions = [t for t in transactions if t["type"] == "deposit"]
-        assert len(deposit_transactions) == 4
+        assert len(transactions) == 3
         
-        # 7. Withdraw some points
-        params = {"name": "gaming", "count": 20}
-        response = client.get("/withdraw", params=params, headers=auth_headers)
+        # Verify transaction types
+        deposit_transactions = [t for t in transactions if t["type"] == "deposit"]
+        withdraw_transactions = [t for t in transactions if t["type"] == "withdraw"]
+        assert len(deposit_transactions) == 2
+        assert len(withdraw_transactions) == 1
+        
+        # 7. Final balance check
+        response = client.get("/balance", headers=auth_headers)
         assert response.status_code == 200
-        assert response.json()["balance_remaining"] == 25
+        assert response.json()["balance"] == 95
     
     def test_time_sensitive_operations(self, client, auth_headers, db_session):
         """Test operations that depend on time."""
-        # Create events with specific timestamps
+        # Test transaction timestamps
         with freeze_time("2024-01-15 10:00:00"):
-            params = {"deviceId": "esp32-001", "workoutId": 1000, "event": "started"}
-            response = client.get("/webhook", params=params, headers=auth_headers)
+            params = {"name": "bonus", "count": 50}
+            response = client.get("/deposit", params=params, headers=auth_headers)
             assert response.status_code == 200
         
-        # Move time forward and stop
-        with freeze_time("2024-01-15 10:30:00"):
-            params = {"deviceId": "esp32-001", "workoutId": 1000, "event": "stopped"}
-            response = client.get("/webhook", params=params, headers=auth_headers)
+        # Move time forward and make another transaction
+        with freeze_time("2024-01-15 11:00:00"):
+            params = {"name": "gaming", "count": 20}
+            response = client.get("/withdraw", params=params, headers=auth_headers)
             assert response.status_code == 200
         
-        # Check if events were recorded in database
-        events = db_session.query(WorkoutEvent).filter_by(workout_id=1000).all()
-        print(f"DEBUG: Found {len(events)} events in database")
-        for event in events:
-            print(f"  Event: {event.event} at {event.timestamp}")
-        
-        # Check workout duration - use a broader date range
-        params = {"start_date": "2024-01-01", "end_date": "2024-12-31"}
-        response = client.get("/workouts", params=params, headers=auth_headers)
+        # Check that transactions have correct timestamps
+        response = client.get("/transactions", headers=auth_headers)
         assert response.status_code == 200
+        transactions = response.json()
         
-        workouts = response.json()
-        print(f"DEBUG: Found {len(workouts)} workouts: {workouts}")
+        # Should have 2 transactions with different timestamps
+        assert len(transactions) == 2
         
-        if len(workouts) > 0:
-            assert workouts[0]["duration"] == 1800  # 30 minutes = 1800 seconds
-        else:
-            # If the time mocking doesn't work as expected, just verify the events exist
-            assert len(events) == 2  # We should at least have the events recorded
+        # Transactions should be ordered by timestamp descending (newest first)
+        timestamps = [t["timestamp"] for t in transactions]
+        assert timestamps[0] > timestamps[1]  # First transaction is newer
 
 
 class TestErrorHandling:

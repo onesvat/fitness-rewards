@@ -1,23 +1,57 @@
 version: '3.8'
 
+# Fitness Rewards Docker Compose Configuration
+# Make sure to create a .env file based on .env.example before running
+
 services:
-  app:
+  server:
     build: .
+    env_file: .env
     ports:
-      - "8000:8000"
+      - "${PORT:-8000}:${PORT:-8000}"
     environment:
-      - DATABASE_URL=sqlite:///./fitness_rewards.db
-      - API_KEY=your-secret-api-key-123
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./data/fitness_rewards.db}
+      - API_KEY=${API_KEY:-your-secret-api-key-123}
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-8000}
     volumes:
       - ./data:/app/data
-      - ./fitness_rewards.db:/app/fitness_rewards.db
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+    command: ["uv", "run", "python", "-m", "fitness_rewards.main"]
+
+  tv-consumer:
+    build: .
+    env_file: .env
+    environment:
+      - API_BASE=${API_BASE:-http://server:8000}
+      - API_KEY=${API_KEY:-your-secret-api-key-123}
+      - TV_CONFIG_FILE=${TV_CONFIG_FILE:-./data/tv_devices.json}
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-60}
+      - POINTS_PER_CHECK=${POINTS_PER_CHECK:-1}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    depends_on:
+      - server
+    network_mode: host  # Required for Apple TV discovery
+    command: ["python", "tv_consumer.py", "run"]
+    profiles:
+      - monitoring
+
+  telegram-bot:
+    build: .
+    env_file: .env
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - SERVER_URL=${SERVER_URL:-http://server:8000}
+      - API_KEY=${API_KEY:-your-secret-api-key-123}
+      - NOTIFICATION_EDIT_WINDOW=${NOTIFICATION_EDIT_WINDOW:-5}
+    restart: unless-stopped
+    depends_on:
+      - server
+    command: ["uv", "run", "clients/telegram_bot.py"]
+    profiles:
+      - bot
 
 volumes:
   data:

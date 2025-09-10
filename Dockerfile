@@ -1,25 +1,28 @@
-FROM python:3.11-slim
+FROM python:3.12-slim-bookworm
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the project into the image
+ADD . /app
+
+# Sync the project into a new environment, asserting the lockfile is up to date
 WORKDIR /app
 
-# Install uv for fast Python package management
-RUN pip install uv
+RUN uv sync --locked
 
-# Copy dependency files
-COPY pyproject.toml uv.lock ./
+# Install the package in editable mode so Python can find the modules
+RUN uv pip install -e .
 
-# Install dependencies using uv
-RUN uv sync --frozen
-
-# Copy application code
-COPY server.py ./
-COPY main.ino ./
-
-# Create data directory for SQLite database
+# Create data directory for SQLite database and configs
 RUN mkdir -p /app/data
 
-# Expose port
+# Expose the port the app runs on
 EXPOSE 8000
 
-# Run the application
-CMD ["uv", "run", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Set the default command to run the main server
+CMD ["uv", "run", "python", "-m", "fitness_rewards.main"]
