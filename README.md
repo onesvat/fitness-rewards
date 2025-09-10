@@ -1,207 +1,110 @@
-# Fitness Rewards API
+# 🏋️ Fitness Rewards System
 
-A FastAPI application that receives and analyzes workout data from ESP32 devices, managing a point-based balance system for various fitness activities. Now includes a Telegram bot for easy interaction!
+A smart fitness tracking system that rewards your workouts with points! Connect ESP32 devices to track activities and manage rewards through a Telegram bot interface.
 
-## Features
+## ✨ Key Features
 
-- **Fitness Event Tracking**: Log events from various fitness equipment (e.g., started, paused, resumed, stopped, revolution_add).
-- **Flexible Point System**: Earn points from any tracked fitness activity.
-- **Comprehensive Transaction History**: Keep a complete record of all point deposits and withdrawals.
-- **Data Analytics**: Filter and retrieve workout data by date and device.
-- **Secure API**: Protect endpoints with API key authentication.
-- **Telegram Bot Integration**: Manage your fitness rewards through Telegram with commands and notifications.
+- 📊 **Workout Tracking** - Automatically log fitness events from ESP32 devices
+- 🎯 **Point-Based Rewards** - Earn and spend points for various activities  
+- 📱 **Telegram Bot** - Easy interaction through chat commands
+- 📈 **Analytics** - Track progress with detailed workout history
+- 🔐 **Secure API** - Protected endpoints with authentication
 
-## Telegram Bot
+## 🤖 Telegram Bot Commands
 
-The integrated Telegram bot provides an easy way to interact with your fitness rewards system:
+| Command | Description |
+|---------|-------------|
+| `/start` | Get started with setup instructions |
+| `/register` | Enable balance notifications |
+| `/balance` | Check current points |
+| `/withdraw 50` | Spend points on activities |
+| `/deposit 100` | Add points manually |
+| `/transactions` | View transaction history |
 
-### Bot Commands
-
-- `/start` - Welcome message and instructions
-- `/register` - Register for balance change notifications
-- `/balance` - Check your current point balance
-- `/withdraw {amount}` - Withdraw points for activities (e.g., `/withdraw 50`)
-- `/deposit {amount}` - Add points manually (e.g., `/deposit 100`)
-- `/transactions` - View recent transaction history
-- `/help` - Show help message
-
-### Features
-
-- **Interactive Activity Selection**: Choose from predefined activities when withdrawing/depositing points
-- **Smart Notifications**: Get notified of balance changes with message editing (edits within 5 minutes, then sends new message)
-- **Real-time Updates**: All registered users receive notifications when balance changes
-- **User-friendly Interface**: Simple commands with helpful error messages and guidance
-
-## Getting Started
-
-Follow these steps to get the project up and running on your local machine.
+## 🚀 Quick Start
 
 ### Prerequisites
-
 - Python 3.8+
-- [uv](https://github.com/astral-sh/uv) (for dependency management)
-- An ESP32 device for hardware integration (optional)
+- [uv](https://github.com/astral-sh/uv) package manager
+- ESP32 device (optional)
 
-### Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/your-username/fitness-rewards.git
-   cd fitness-rewards
-   ```
-
-2. **Install dependencies:**
-   This project uses `uv` to manage dependencies.
-   ```bash
-   # Install main dependencies
-   uv sync
-
-   # Install test and development dependencies
-   uv sync --extra test --extra dev
-   ```
-
-3. **Set up environment variables:**
-   ```bash
-   # Copy the example environment file
-   cp .env.example .env
-   
-   # Edit .env file and set your values, especially:
-   # - TELEGRAM_BOT_TOKEN (get from @BotFather on Telegram)
-   # - API_KEY (change from default for security)
-   ```
-
-### Setting up Telegram Bot
-
-1. **Create a Telegram Bot:**
-   - Message [@BotFather](https://t.me/BotFather) on Telegram
-   - Send `/newbot` and follow the instructions
-   - Copy the bot token to your `.env` file as `TELEGRAM_BOT_TOKEN`
-
-2. **Configure the bot:**
-   - Set your API key in the `.env` file
-   - Ensure the server URL is correct (default: `http://server:8000` for Docker)
-
-### Running with Docker Compose
-
-The easiest way to run the entire system:
-
+### 1️⃣ Setup
 ```bash
-# Start just the server
-docker-compose up server
-
-# Start server with TV monitoring
-docker-compose --profile monitoring up
-
-# Start server with Telegram bot
-docker-compose --profile bot up
-
-# Start everything (server, TV monitoring, and Telegram bot)
-docker-compose --profile monitoring --profile bot up
-
-# Run in background
-docker-compose --profile bot up -d
+git clone https://github.com/your-username/fitness-rewards.git
+cd fitness-rewards
+uv sync --extra test --extra dev
+cp .env.example .env
 ```
 
-### Running the Server (Local Development)
+### 2️⃣ Configure Telegram Bot
+1. Message [@BotFather](https://t.me/BotFather) → `/newbot`
+2. Add your bot token to `.env`:
+   ```
+   TELEGRAM_BOT_TOKEN=your_token_here
+   API_KEY=your_secure_key
+   ```
 
-To start the FastAPI server locally, run:
+### 3️⃣ Run with Docker (Recommended)
 ```bash
+docker-compose up -d
+```
+
+### 3️⃣ Alternative: Local Development
+```bash
+# Terminal 1: Start API server
 uv run python server.py
-```
-The API will be accessible at `http://localhost:8000`, with interactive documentation available at `http://localhost:8000/docs`.
 
-### Running the Telegram Bot (Local Development)
-
-To start the Telegram bot locally:
-```bash
-# Make sure the server is running first
+# Terminal 2: Start Telegram bot  
 uv run python telegram_bot.py
 ```
 
-## Project Structure
+📍 **API Documentation**: http://localhost:8000/docs
 
-Here's an overview of the key files in this project:
+## 📁 Project Structure
 
-- **`server.py`**: The main FastAPI application file. It defines API endpoints, handles business logic, and interacts with the database.
-- **`telegram_bot.py`**: Telegram bot implementation that provides a user-friendly interface to the fitness rewards system.
-- **`test_server.py`**: Contains all the tests for the API, ensuring reliability and correctness.
-- **`main.ino`**: An Arduino sketch for the ESP32 device, responsible for tracking workout data and sending it to the API.
-- **`pyproject.toml`**: The project's configuration file, defining metadata and dependencies.
-- **`docker-compose.yml`**: Defines the services, networks, and volumes for a Dockerized setup.
-- **`Dockerfile`**: Instructions for building the Docker image for the application.
-- **`.env.example`**: Example environment variables file.
-- **`README.md`**: The file you are currently reading.
-
-## API Endpoints
-
-All endpoints require an `x-api-key` header for authentication.
-
-### Webhook
-- `POST /webhook`: Logs fitness events sent from hardware devices.
-
-### Analytics
-- `GET /workouts`: Retrieves workout data, with options for date and device filtering.
-
-### Balance Management
-- `GET /balance`: Fetches the current point balance.
-- `GET /withdraw`: Withdraws points from the balance.
-- `GET /deposit`: Manually deposits points to the balance.
-- `GET /transactions`: Retrieves a history of all transactions.
-
-### Telegram Integration
-- `POST /register_chat`: Register a Telegram chat for notifications.
-- `GET /registered_chats`: Get all registered Telegram chats.
-
-## Database
-
-The application uses a SQLite database (`fitness_rewards.db`) with the following tables:
-
-- **`workout_events`**: Stores individual fitness events from all connected devices.
-- **`balance`**: Maintains the current point balance.
-- **`transactions`**: Logs all deposits and withdrawals.
-- **`chat_registrations`**: Stores registered Telegram chats for notifications.
-
-## Configuration
-
-Key configurations are located in `server.py`:
-
-- `DATABASE_URL`: The connection string for the SQLite database.
-- `API_KEY`: The secret key for API authentication. **Remember to change this in a production environment.**
-
-## Development and Testing
-
-### Code Quality
-
-Ensure your code adheres to quality standards by running the following commands:
-
-```bash
-# Format code
-uv run black .
-
-# Sort imports
-uv run isort .
-
-# Lint code
-uv run flake8 .
+```
+├── server.py              # FastAPI application & business logic
+├── telegram_bot.py        # Telegram bot interface  
+├── main.ino              # ESP32 Arduino sketch
+├── test_server.py        # API test suite
+├── docker-compose.yml    # Container orchestration
+└── pyproject.toml        # Dependencies & config
 ```
 
-### Running Tests
+## 🔌 API Endpoints
 
-Execute the full test suite to verify functionality:
-```bash
-uv run pytest
-```
+> All endpoints require `x-api-key` header
 
-For more detailed output, use the `-v` flag:
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/webhook` | POST | Log fitness events from devices |
+| `/balance` | GET | Get current point balance |
+| `/withdraw` | GET | Spend points |
+| `/deposit` | GET | Add points manually |
+| `/workouts` | GET | Retrieve workout history |
+| `/transactions` | GET | View transaction history |
+
+## 🗄️ Database Schema
+
+**SQLite** with 4 tables:
+- `workout_events` - Device fitness events
+- `balance` - Current point balance  
+- `transactions` - Deposit/withdrawal history
+- `chat_registrations` - Telegram chat IDs
+
+## 🧪 Development
+
 ```bash
+# Code quality
+uv run black . && uv run isort . && uv run flake8 .
+
+# Run tests
 uv run pytest -v
-```
 
-You can also run specific test categories:
-```bash
-# Run authentication tests
+# Specific test categories  
 uv run pytest test_server.py::TestAuthentication
-
-# Run webhook endpoint tests
-uv run pytest test_server.py::TestWebhookEndpoint
 ```
+
+## 📝 License
+
+This project is open source. Feel free to contribute!
