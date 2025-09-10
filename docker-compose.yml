@@ -21,7 +21,7 @@ services:
     build: .
     env_file: .env
     environment:
-      - API_BASE=${API_BASE:-http://api:8000}
+      - SERVER_URL=${SERVER_URL:-http://api:8000}
       - API_KEY=${API_KEY:-your-secret-api-key-123}
       - HA_CONFIG_FILE=${HA_CONFIG_FILE:-./data/ha_devices.json}
       - HA_URL=${HA_URL:-http://homeassistant.local:8123}

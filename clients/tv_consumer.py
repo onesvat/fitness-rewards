@@ -30,8 +30,8 @@ from pyatv import scan, connect, const, exceptions
 from pyatv import pair as atv_pair
 
 # Configuration
-CONFIG_FILE = os.getenv("TV_CONFIG_FILE", "./data/tv_devices.json")
-API_BASE = os.getenv("API_BASE", "http://server:8000")
+CONFIG_FILE = os.getenv("HA_CONFIG_FILE", "./data/tv_devices.json")
+SERVER_URL = os.getenv("SERVER_URL", "http://server:8000")
 API_KEY = os.getenv("API_KEY", "your-secret-api-key-123")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))  # Check every 60 seconds
 POINTS_PER_CHECK = int(os.getenv("POINTS_PER_CHECK", "1"))  # Charge 1 point per check
@@ -235,7 +235,7 @@ class TVConsumer:
     
     def __init__(self):
         self.device_manager = DeviceManager(CONFIG_FILE)
-        self.api_client = APIClient(API_BASE, API_KEY)
+        self.api_client = APIClient(SERVER_URL, API_KEY)
         self.monitors: List[DeviceMonitor] = []
         self.running = False
     

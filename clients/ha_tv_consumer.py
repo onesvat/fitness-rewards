@@ -26,7 +26,7 @@ import aiohttp
 
 # Configuration
 CONFIG_FILE = os.getenv("HA_CONFIG_FILE", "./data/ha_devices.json")
-API_BASE = os.getenv("API_BASE", "http://server:8000")
+SERVER_URL = os.getenv("SERVER_URL", "http://server:8000")
 API_KEY = os.getenv("API_KEY", "your-secret-api-key-123")
 HA_URL = os.getenv("HA_URL", "http://homeassistant:8123")
 HA_TOKEN = os.getenv("HA_TOKEN", "your-ha-token")
@@ -251,7 +251,7 @@ class HATVConsumer:
     
     def __init__(self):
         self.device_manager = DeviceManager(CONFIG_FILE)
-        self.api_client = APIClient(API_BASE, API_KEY)
+        self.api_client = APIClient(SERVER_URL, API_KEY)
         self.ha_client = HomeAssistantClient(HA_URL, HA_TOKEN)
         self.monitors: List[DeviceMonitor] = []
         self.running = False
