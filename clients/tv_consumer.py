@@ -10,6 +10,7 @@ Simple script that:
 Commands:
 - list: Show available Apple TV devices on the network
 - add <identifier>: Add a device to monitoring list
+- pair <identifier>: Pair with a device to enable control (stores credentials)
 - remove <identifier>: Remove a device from monitoring list
 - run: Start monitoring all configured devices
 """
@@ -26,6 +27,7 @@ from pathlib import Path
 
 import aiohttp
 from pyatv import scan, connect, const, exceptions
+from pyatv import pair as atv_pair
 
 # Configuration
 CONFIG_FILE = os.getenv("TV_CONFIG_FILE", "./data/tv_devices.json")
@@ -44,26 +46,32 @@ logger = logging.getLogger("tv_consumer")
 
 
 class DeviceConfig:
-    """Configuration for a monitored Apple TV device."""
-    
-    def __init__(self, identifier: str, name: str, address: str):
+    """Configuration for a monitored Apple TV device.
+
+    credentials: mapping protocol -> credential string (e.g. {"mrp": "XXX"})
+    """
+
+    def __init__(self, identifier: str, name: str, address: str, credentials: Optional[Dict[str, str]] = None):
         self.identifier = identifier
         self.name = name
         self.address = address
-    
+        self.credentials: Dict[str, str] = credentials or {}
+
     def to_dict(self) -> dict:
         return {
             "identifier": self.identifier,
             "name": self.name,
-            "address": self.address
+            "address": self.address,
+            "credentials": self.credentials or {}
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'DeviceConfig':
         return cls(
             identifier=data["identifier"],
             name=data["name"],
-            address=data["address"]
+            address=data["address"],
+            credentials=data.get("credentials", {})
         )
 
 
@@ -174,8 +182,15 @@ class DeviceMonitor:
             for device in devices:
                 if (device.identifier == self.config.identifier or 
                     device.address.exploded == self.config.address):
+                    # Apply stored credentials if available
+                    if self.config.credentials:
+                        for service in device.services:
+                            proto = service.protocol.name.lower()
+                            if proto in self.config.credentials and not service.credentials:
+                                service.set_credentials(self.config.credentials[proto])
+                        logger.debug(f"Applied credentials for {self.config.name}: {list(self.config.credentials.keys())}")
                     self.atv = await connect(device)
-                    logger.info(f"Connected to {self.config.name}")
+                    logger.info(f"Connected to {self.config.name}{' (authenticated)' if self.config.credentials else ''}")
                     return True
             
             logger.warning(f"Device {self.config.name} not found")
@@ -276,6 +291,56 @@ class TVConsumer:
             print(f"Removed: {identifier}")
         else:
             print(f"Device {identifier} not found.")
+
+    def pair_device(self, identifier: str):
+        """Pair with a configured (or discovered) device to obtain credentials.
+
+        Flow:
+        1. Scan and locate device by identifier
+        2. Start MRP pairing (shows PIN on TV)
+        3. Prompt user for PIN and finish pairing
+        4. Store credential in config under device.credentials['mrp']
+        """
+        async def _pair():
+            loop = asyncio.get_running_loop()
+            devices = await scan(loop, timeout=10)
+            target = None
+            for dev in devices:
+                if dev.identifier == identifier:
+                    target = dev
+                    break
+            if not target:
+                print(f"Device {identifier} not found on network.")
+                return
+
+            # Prepare pairing for MRP protocol if available
+            mrp_service = next((s for s in target.services if s.protocol == const.Protocol.MRP), None)
+            if not mrp_service:
+                print("MRP service not available on this device; cannot pair.")
+                return
+            print(f"Starting pairing with {target.name} (MRP)...")
+            try:
+                pairing = await atv_pair(target, const.Protocol.MRP, loop)
+                await pairing.begin()
+                print("A PIN should be shown on the TV. Enter PIN:")
+                pin = input("PIN: ").strip()
+                pairing.pin(pin)
+                await pairing.finish()
+                if not pairing.has_paired:
+                    print("Pairing failed.")
+                    return
+                cred = pairing.service.credentials
+                print("Pairing succeeded. Credential acquired.")
+
+                # Ensure device exists in config (add if missing)
+                if identifier not in self.device_manager.devices:
+                    self.device_manager.add_device(identifier, target.name, target.address.exploded)
+                self.device_manager.devices[identifier].credentials['mrp'] = cred
+                self.device_manager.save_config()
+            except Exception as e:
+                print(f"Pairing error: {e}")
+
+        asyncio.run(_pair())
     
     async def run_monitoring(self):
         """Main monitoring loop - check devices and charge points."""
@@ -354,6 +419,7 @@ def main():
         print("Usage:")
         print("  python tv_consumer.py list")
         print("  python tv_consumer.py add <identifier>")
+        print("  python tv_consumer.py pair <identifier>")
         print("  python tv_consumer.py remove <identifier>")
         print("  python tv_consumer.py run")
         sys.exit(1)
@@ -368,6 +434,11 @@ def main():
             print("Usage: python tv_consumer.py add <identifier>")
             sys.exit(1)
         consumer.add_device(sys.argv[2])
+    elif command == "pair":
+        if len(sys.argv) < 3:
+            print("Usage: python tv_consumer.py pair <identifier>")
+            sys.exit(1)
+        consumer.pair_device(sys.argv[2])
     elif command == "remove":
         if len(sys.argv) < 3:
             print("Usage: python tv_consumer.py remove <identifier>")

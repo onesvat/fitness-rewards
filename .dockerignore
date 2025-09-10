@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -12,10 +13,12 @@ nosetests.xml
 coverage.xml
 *.cover
 *.log
-.git
 .mypy_cache
 .pytest_cache
 .hypothesis
+dist/
+build/
+*.egg-info/
 
 # SQLite database files (will be mounted as volume)
 *.db
@@ -24,6 +27,9 @@ coverage.xml
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
 # OS
 .DS_Store
@@ -31,6 +37,27 @@ Thumbs.db
 
 # Environment
 .env
+.env.*
 .venv
 env/
 venv/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (except README.md which is required by hatchling)
+*.md
+!README.md
+docs/
+
+# Development files
+tests/
+hardware/
+.python-version
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore

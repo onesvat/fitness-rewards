@@ -1,10 +1,8 @@
-version: '3.8'
-
 # Fitness Rewards Docker Compose Configuration
 # Make sure to create a .env file based on .env.example before running
 
 services:
-  server:
+  api:
     build: .
     env_file: .env
     ports:
@@ -17,41 +15,39 @@ services:
     volumes:
       - ./data:/app/data
     restart: unless-stopped
-    command: ["uv", "run", "python", "-m", "fitness_rewards.main"]
+    command: ["uv", "run", "fitness-rewards-server"]
 
   tv-consumer:
     build: .
     env_file: .env
     environment:
-      - API_BASE=${API_BASE:-http://server:8000}
+      - API_BASE=${API_BASE:-http://api:8000}
       - API_KEY=${API_KEY:-your-secret-api-key-123}
-      - TV_CONFIG_FILE=${TV_CONFIG_FILE:-./data/tv_devices.json}
+      - HA_CONFIG_FILE=${HA_CONFIG_FILE:-./data/ha_devices.json}
+      - HA_URL=${HA_URL:-http://homeassistant.local:8123}
+      - HA_TOKEN=${HA_TOKEN:-your-long-lived-access-token}
       - CHECK_INTERVAL=${CHECK_INTERVAL:-60}
       - POINTS_PER_CHECK=${POINTS_PER_CHECK:-1}
     volumes:
       - ./data:/app/data
     restart: unless-stopped
     depends_on:
-      - server
+      - api
     network_mode: host  # Required for Apple TV discovery
-    command: ["python", "tv_consumer.py", "run"]
-    profiles:
-      - monitoring
+    command: ["uv", "run", "fitness-rewards-ha-tv", "run"]
 
   telegram-bot:
     build: .
     env_file: .env
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - SERVER_URL=${SERVER_URL:-http://server:8000}
+      - SERVER_URL=${SERVER_URL:-http://api:8000}
       - API_KEY=${API_KEY:-your-secret-api-key-123}
       - NOTIFICATION_EDIT_WINDOW=${NOTIFICATION_EDIT_WINDOW:-5}
     restart: unless-stopped
     depends_on:
-      - server
-    command: ["uv", "run", "clients/telegram_bot.py"]
-    profiles:
-      - bot
+      - api
+    command: ["uv", "run", "fitness-rewards-telegram"]
 
 volumes:
   data:
