@@ -25,7 +25,7 @@ from typing import Dict, List, Optional
 import aiohttp
 
 # Configuration
-CONFIG_FILE = os.getenv("HA_CONFIG_FILE", "./data/ha_devices.json")
+HA_CONFIG_FILE = os.getenv("HA_CONFIG_FILE", "./data/ha_devices.json")
 SERVER_URL = os.getenv("SERVER_URL", "http://server:8000")
 API_KEY = os.getenv("API_KEY", "your-secret-api-key-123")
 HA_URL = os.getenv("HA_URL", "http://homeassistant:8123")
@@ -254,7 +254,7 @@ class HATVConsumer:
     """Main application class for Home Assistant TV monitoring."""
     
     def __init__(self):
-        self.device_manager = DeviceManager(CONFIG_FILE)
+        self.device_manager = DeviceManager(HA_CONFIG_FILE)
         self.api_client = APIClient(SERVER_URL, API_KEY)
         self.ha_client = HomeAssistantClient(HA_URL, HA_TOKEN)
         self.monitors: List[DeviceMonitor] = []

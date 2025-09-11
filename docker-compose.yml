@@ -12,6 +12,8 @@ services:
       - API_KEY=${API_KEY:-your-secret-api-key-123}
       - HOST=${HOST:-0.0.0.0}
       - PORT=${PORT:-8000}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - LOW_BALANCE_THRESHOLD=${LOW_BALANCE_THRESHOLD:-50}
     volumes:
       - ./data:/app/data
     restart: unless-stopped
@@ -24,8 +26,8 @@ services:
       - SERVER_URL=${SERVER_URL:-http://api:8000}
       - API_KEY=${API_KEY:-your-secret-api-key-123}
       - HA_CONFIG_FILE=${HA_CONFIG_FILE:-./data/ha_devices.json}
-      - HA_URL=${HA_URL:-http://homeassistant.local:8123}
-      - HA_TOKEN=${HA_TOKEN:-your-long-lived-access-token}
+      - HA_URL=${HA_URL:-http://homeassistant:8123}
+      - HA_TOKEN=${HA_TOKEN:-your-ha-token}
       - CHECK_INTERVAL=${CHECK_INTERVAL:-60}
       - POINTS_PER_CHECK=${POINTS_PER_CHECK:-1}
     volumes:
@@ -44,6 +46,8 @@ services:
       - SERVER_URL=${SERVER_URL:-http://api:8000}
       - API_KEY=${API_KEY:-your-secret-api-key-123}
       - BALANCE_CHECK_INTERVAL=${BALANCE_CHECK_INTERVAL:-60}
+      - LOW_BALANCE_THRESHOLD=${LOW_BALANCE_THRESHOLD:-50}
+      - MAX_TRANSACTIONS_IN_NOTIFICATION=${MAX_TRANSACTIONS_IN_NOTIFICATION:-3}
     restart: unless-stopped
     depends_on:
       - api

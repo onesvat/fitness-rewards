@@ -1,7 +1,10 @@
 """Main FastAPI application for Fitness Rewards API."""
 
+import os
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, Query
+import httpx
+import asyncio
+from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 from typing import Optional
@@ -12,6 +15,78 @@ from .models.database import (
     get_db, init_database, Balance, Transaction, ChatRegistration
 )
 from .api.auth import verify_api_key
+
+# Configuration for low balance notifications
+LOW_BALANCE_THRESHOLD = int(os.getenv("LOW_BALANCE_THRESHOLD", "50"))  # points
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}" if TELEGRAM_BOT_TOKEN else None
+
+async def send_low_balance_notification(current_balance: int, db: Session):
+    """Send low balance notification to all registered chats."""
+    if not TELEGRAM_BOT_TOKEN:
+        print("Warning: TELEGRAM_BOT_TOKEN not set, skipping low balance notification")
+        return
+    
+    try:
+        # Get all registered chats
+        registered_chats = db.query(ChatRegistration).filter(ChatRegistration.is_active == 1).all()
+        
+        if not registered_chats:
+            print("No registered chats found for low balance notification")
+            return
+        
+        # Create the notification message
+        message = f"⚠️ **Low Balance Alert** ⚠️\n\n💰 Current Balance: **{current_balance}** points\n📉 Below threshold of {LOW_BALANCE_THRESHOLD} points\n\n💪 Time to earn some more points!"
+        
+        # Send to each registered chat
+        successful_sends = 0
+        async with httpx.AsyncClient() as client:
+            for chat in registered_chats:
+                try:
+                    response = await client.post(
+                        f"{TELEGRAM_API_URL}/sendMessage",
+                        json={
+                            "chat_id": chat.chat_id,
+                            "text": message,
+                            "parse_mode": "Markdown"
+                        },
+                        timeout=10.0
+                    )
+                    
+                    if response.status_code == 200:
+                        successful_sends += 1
+                        print(f"Low balance notification sent to chat {chat.chat_id}")
+                    else:
+                        print(f"Failed to send low balance notification to chat {chat.chat_id}: HTTP {response.status_code}")
+                        
+                        # Try without markdown as fallback
+                        fallback_message = message.replace('*', '').replace('_', '')
+                        fallback_response = await client.post(
+                            f"{TELEGRAM_API_URL}/sendMessage",
+                            json={
+                                "chat_id": chat.chat_id,
+                                "text": fallback_message
+                            },
+                            timeout=10.0
+                        )
+                        
+                        if fallback_response.status_code == 200:
+                            successful_sends += 1
+                            print(f"Low balance notification sent to chat {chat.chat_id} (fallback)")
+                        
+                except Exception as e:
+                    print(f"Error sending low balance notification to chat {chat.chat_id}: {e}")
+        
+        print(f"Low balance notification sent to {successful_sends}/{len(registered_chats)} registered chats")
+        
+    except Exception as e:
+        print(f"Error in send_low_balance_notification: {e}")
+
+def check_if_first_time_below_threshold(previous_balance: int, current_balance: int) -> bool:
+    """Check if this is the first time balance has dropped below threshold."""
+    # Check if we just crossed the threshold
+    # Previous balance was >= threshold AND current balance is < threshold
+    return previous_balance >= LOW_BALANCE_THRESHOLD and current_balance < LOW_BALANCE_THRESHOLD
 
 
 @asynccontextmanager
@@ -53,7 +128,8 @@ def get_balance(
 
 
 @app.get("/withdraw", tags=["Balance"])
-def withdraw_points(
+async def withdraw_points(
+    background_tasks: BackgroundTasks,
     name: str = Query(..., description="Name of the activity consuming points (e.g., 'watching_tv', 'gaming')."),
     count: int = Query(..., description="Number of points to withdraw."),
     db: Session = Depends(get_db),
@@ -71,26 +147,35 @@ def withdraw_points(
             detail=f"Insufficient balance. Current: {current_balance}, Requested: {count}"
         )
     
+    # Store the previous balance before withdrawal
+    previous_balance = balance.total_points
+    
     # Perform withdrawal
     balance.total_points -= count
     balance.updated_at = datetime.now(timezone.utc)
+    new_balance = balance.total_points
     
     # Record the transaction
     transaction = Transaction(
         type="withdraw",
         name=name,
         count=count,
-        balance_after=balance.total_points,
+        balance_after=new_balance,
         description=f"Withdrawal for {name}"
     )
     db.add(transaction)
     db.commit()
     
+    # Check if we need to send low balance notification
+    if check_if_first_time_below_threshold(previous_balance, new_balance):
+        # Send notification in background to avoid blocking the response
+        background_tasks.add_task(send_low_balance_notification, new_balance, db)
+    
     return {
         "status": "success",
         "message": f"Withdrew {count} points for {name}",
         "withdrawn": count,
-        "balance_remaining": balance.total_points
+        "balance": new_balance
     }
 
 
@@ -129,7 +214,7 @@ def deposit_points(
         "status": "success",
         "message": f"Deposited {count} points from {name}",
         "deposited": count,
-        "balance_total": balance.total_points
+        "balance": balance.total_points
     }
 
 
@@ -137,6 +222,8 @@ def deposit_points(
 def get_transactions(
     limit: int = Query(10, description="Maximum number of transactions to return."),
     type: Optional[str] = Query(None, description="Filter by transaction type: 'deposit' or 'withdraw'."),
+    start_date: Optional[datetime] = Query(None, description="Start date for filtering transactions (ISO format)."),
+    end_date: Optional[datetime] = Query(None, description="End date for filtering transactions (ISO format)."),
     db: Session = Depends(get_db),
     api_key: str = Depends(verify_api_key)
 ):
@@ -145,6 +232,12 @@ def get_transactions(
     
     if type and type in ["deposit", "withdraw"]:
         query = query.filter(Transaction.type == type)
+    
+    if start_date:
+        query = query.filter(Transaction.timestamp >= start_date)
+    
+    if end_date:
+        query = query.filter(Transaction.timestamp <= end_date)
     
     transactions = query.limit(limit).all()
     
