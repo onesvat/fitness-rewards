@@ -13,12 +13,11 @@ import httpx
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from collections import defaultdict
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application, 
     CommandHandler, 
     ContextTypes, 
-    CallbackQueryHandler,
     MessageHandler,
     filters
 )
@@ -34,39 +33,55 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 API_KEY = os.getenv("API_KEY", "your-secret-api-key-123")
-BALANCE_CHECK_INTERVAL = int(os.getenv("BALANCE_CHECK_INTERVAL", "60"))  # minutes
-MAX_TRANSACTIONS_IN_NOTIFICATION = int(os.getenv("MAX_TRANSACTIONS_IN_NOTIFICATION", "3"))  # number of transactions
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
 
-# Global variables for notification management
-last_notification_messages: Dict[int, Dict[str, Any]] = {}
-last_known_balance: Optional[int] = None
-monitoring_task: Optional[asyncio.Task] = None
-low_balance_warning_sent: bool = False
-balance_summary_task: Optional[asyncio.Task] = None
-last_processed_transaction_time: Optional[datetime] = None
+# GMT+3 timezone
+GMT_PLUS_3 = timezone(timedelta(hours=3))
 
-async def initialize_last_transaction_time():
-    """Initialize last_processed_transaction_time with the most recent transaction timestamp."""
-    global last_processed_transaction_time
+def format_datetime_for_user(dt_str: str, format_type: str = 'full') -> str:
+    """
+    Format datetime string for user display in GMT+3 timezone.
+    
+    Args:
+        dt_str: ISO format datetime string or timestamp
+        format_type: 'full' for full datetime, 'short' for MM/DD HH:MM, 'time' for HH:MM:SS
+    
+    Returns:
+        Formatted datetime string in GMT+3
+    """
     try:
-        transactions = await api.get_transactions(limit=1)
-        if transactions:
-            last_transaction = transactions[0]
-            last_processed_transaction_time = datetime.fromisoformat(
-                last_transaction['timestamp'].replace('Z', '+00:00')
-            )
-            logger.info(f"Initialized last processed transaction time: {last_processed_transaction_time}")
+        # Parse ISO format datetime (handle both with and without 'Z')
+        if dt_str.endswith('Z'):
+            dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
         else:
-            # No transactions exist, use current time minus interval
-            last_processed_transaction_time = datetime.now(timezone.utc) - timedelta(minutes=BALANCE_CHECK_INTERVAL)
-            logger.info("No transactions found, using current time minus interval")
-    except Exception as e:
-        logger.error(f"Error initializing last transaction time: {e}")
-        # Fallback to current time minus interval
-        last_processed_transaction_time = datetime.now(timezone.utc) - timedelta(minutes=BALANCE_CHECK_INTERVAL)
+            dt = datetime.fromisoformat(dt_str)
+        
+        # Convert to GMT+3
+        dt_gmt3 = dt.astimezone(GMT_PLUS_3)
+        
+        # Format based on type
+        if format_type == 'full':
+            return dt_gmt3.strftime('%Y-%m-%d %H:%M:%S GMT+3')
+        elif format_type == 'short':
+            return dt_gmt3.strftime('%m/%d %H:%M')
+        elif format_type == 'time':
+            return dt_gmt3.strftime('%H:%M:%S')
+        else:
+            return dt_gmt3.strftime('%Y-%m-%d %H:%M:%S GMT+3')
+    except:
+        return dt_str if dt_str else "Unknown"
+
+def get_current_time_gmt3(format_type: str = 'time') -> str:
+    """Get current time formatted in GMT+3."""
+    now = datetime.now(GMT_PLUS_3)
+    if format_type == 'time':
+        return now.strftime('%H:%M:%S')
+    elif format_type == 'full':
+        return now.strftime('%Y-%m-%d %H:%M:%S GMT+3')
+    else:
+        return now.strftime('%H:%M:%S')
 
 class FitnessRewardsAPI:
     """API client for the fitness rewards server."""
@@ -189,175 +204,6 @@ def escape_markdown(text: str) -> str:
         text = text.replace(char, f'\\{char}')
     return text
 
-async def generate_balance_summary() -> Optional[str]:
-    """Generate a balance summary with transactions grouped by name."""
-    try:
-        global last_processed_transaction_time, last_known_balance
-        
-        # Initialize last processed transaction time if not set
-        if last_processed_transaction_time is None:
-            await initialize_last_transaction_time()
-        
-        # Get current time
-        current_time = datetime.now(timezone.utc)
-        time_threshold = last_processed_transaction_time
-        
-        # Get current balance
-        balance_result = await api.get_balance()
-        current_balance = balance_result.get('balance', 0)
-        
-        # Check if balance has changed since last check
-        if last_known_balance is not None and current_balance == last_known_balance:
-            return None  # No balance change, don't send summary
-        
-        # Get transactions since last check using server-side filtering
-        recent_transactions = await api.get_transactions(
-            limit=100, 
-            start_date=time_threshold
-        )
-        
-        if not recent_transactions:
-            # Update last known balance even if no transactions (manual balance update case)
-            last_known_balance = current_balance
-            return None  # No recent activity
-        
-        # Track the newest transaction time
-        newest_transaction_time = last_processed_transaction_time
-        for transaction in recent_transactions:
-            try:
-                transaction_time = datetime.fromisoformat(transaction['timestamp'].replace('Z', '+00:00'))
-                if newest_transaction_time is None or transaction_time > newest_transaction_time:
-                    newest_transaction_time = transaction_time
-            except:
-                continue
-        
-        # Update last processed transaction time and balance
-        if newest_transaction_time != last_processed_transaction_time:
-            last_processed_transaction_time = newest_transaction_time
-        last_known_balance = current_balance
-        
-        # Group transactions by name and type
-        deposits = defaultdict(int)
-        withdrawals = defaultdict(int)
-        
-        for transaction in recent_transactions:
-            name = transaction['name']
-            count = transaction['count']
-            
-            if transaction['type'] == 'deposit':
-                deposits[name] += count
-            else:  # withdraw
-                withdrawals[name] += count
-        
-        # Calculate totals
-        total_deposits = sum(deposits.values())
-        total_withdrawals = sum(withdrawals.values())
-        net_change = total_deposits - total_withdrawals
-        
-        # Build summary message
-        summary = "📊 **Balance Summary Report** 📊\n\n"
-        summary += f"💰 **Current Balance:** {current_balance} points\n"
-        summary += f"📈 **Net Change:** {net_change:+d} points\n\n"
-        
-        # Add deposits section
-        if deposits:
-            summary += "✅ **Points Earned:**\n"
-            for name, total in sorted(deposits.items(), key=lambda x: x[1], reverse=True):
-                escaped_name = escape_markdown(name)
-                summary += f"   ➕ **{total}** pts - {escaped_name}\n"
-            summary += f"   💎 **Total Earned:** {total_deposits} points\n\n"
-        
-        # Add withdrawals section
-        if withdrawals:
-            summary += "💸 **Points Spent:**\n"
-            for name, total in sorted(withdrawals.items(), key=lambda x: x[1], reverse=True):
-                escaped_name = escape_markdown(name)
-                summary += f"   ➖ **{total}** pts - {escaped_name}\n"
-            summary += f"   💳 **Total Spent:** {total_withdrawals} points\n\n"
-        
-        # Add time range
-        time_range = current_time.strftime('%H:%M UTC')
-        summary += f"⏰ **Report Time:** {time_range}\n"
-        if time_threshold:
-            threshold_str = time_threshold.strftime('%H:%M UTC')
-            summary += f"📅 **Period:** Since {threshold_str}"
-        else:
-            summary += f"📅 **Period:** Last {BALANCE_CHECK_INTERVAL} minutes"
-        
-        return summary
-        
-    except Exception as e:
-        logger.error(f"Error generating balance summary: {e}")
-        return None
-
-async def send_balance_summary_to_registered_chats(application: Application) -> None:
-    """Send balance summary to all registered chats."""
-    try:
-        # Generate summary
-        summary_message = await generate_balance_summary()
-        
-        if not summary_message:
-            logger.info("No recent transactions for balance summary")
-            return
-        
-        # Get registered chats
-        registered_chats = await api.get_registered_chats()
-        
-        if not registered_chats:
-            logger.info("No registered chats found for balance summary")
-            return
-        
-        # Send summary to each registered chat
-        successful_sends = 0
-        for chat in registered_chats:
-            try:
-                chat_id = chat['chat_id']
-                await application.bot.send_message(
-                    chat_id=chat_id,
-                    text=summary_message,
-                    parse_mode='Markdown'
-                )
-                successful_sends += 1
-                logger.info(f"Balance summary sent to chat {chat_id}")
-                
-            except Exception as e:
-                logger.error(f"Failed to send balance summary to chat {chat.get('chat_id', 'unknown')}: {e}")
-                # Try sending without markdown as fallback
-                try:
-                    fallback_message = summary_message.replace('*', '').replace('_', '')
-                    await application.bot.send_message(
-                        chat_id=chat_id,
-                        text=fallback_message
-                    )
-                    successful_sends += 1
-                    logger.info(f"Balance summary sent to chat {chat_id} (fallback)")
-                except Exception as e2:
-                    logger.error(f"Failed to send fallback balance summary to chat {chat.get('chat_id', 'unknown')}: {e2}")
-        
-        logger.info(f"Balance summary sent to {successful_sends}/{len(registered_chats)} registered chats")
-        
-    except Exception as e:
-        logger.error(f"Error in send_balance_summary_to_registered_chats: {e}")
-
-async def balance_summary_monitor(application: Application) -> None:
-    """Background task to periodically send balance summaries."""
-    logger.info(f"Starting balance summary monitor (interval: {BALANCE_CHECK_INTERVAL} minutes)")
-    
-    # Initialize last processed transaction time on startup
-    await initialize_last_transaction_time()
-    
-    while True:
-        try:
-            await asyncio.sleep(BALANCE_CHECK_INTERVAL * 60)  # Convert minutes to seconds
-            await send_balance_summary_to_registered_chats(application)
-            
-        except asyncio.CancelledError:
-            logger.info("Balance summary monitor task cancelled")
-            break
-        except Exception as e:
-            logger.error(f"Error in balance summary monitor: {e}")
-            # Continue running even if there's an error
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     welcome_text = """
@@ -367,17 +213,19 @@ This bot helps you manage your fitness reward points. Here are the available com
 
 🔹 /balance - Check your current point balance
 🔹 /status - Get detailed balance and activity status
-🔹 /withdraw {amount} - Withdraw points for activities (e.g., /withdraw 50)
-🔹 /deposit {amount} - Add points manually (e.g., /deposit 100)
+🔹 /withdraw {amount} [name] - Withdraw points (e.g., /withdraw 50 or /withdraw 50 Watching TV)
+🔹 /deposit {amount} [name] - Add points (e.g., /deposit 100 or /deposit 100 Workout)
 🔹 /transactions - View recent transaction history
 🔹 /register - Register for balance change notifications
 🔹 /unregister - Unregister from balance change notifications
 🔹 /help - Show this help message
 
 **Examples:**
-• /withdraw 30 - Withdraw 30 points for watching TV
-• /deposit 50 - Add 50 points as a bonus
-• /transactions - See your last 10 transactions
+🔹 /withdraw 30 - Withdraw 30 points for "General Activity"
+🔹 /withdraw 30 Watching TV - Withdraw 30 points for "Watching TV"
+🔹 /deposit 50 - Add 50 points as "Manual Deposit"
+🔹 /deposit 50 Cardio Session - Add 50 points for "Cardio Session"
+🔹 /transactions - See your last 10 transactions
 
 Get started by typing /balance to see your current points!
     """
@@ -448,11 +296,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         last_updated = result.get('last_updated', 'Unknown')
         
         # Parse and format the timestamp
-        try:
-            dt = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
-            formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S UTC')
-        except:
-            formatted_time = last_updated
+        formatted_time = format_datetime_for_user(last_updated, 'full')
         
         message = f"💰 **Current Balance:** {balance_amount} points\n📅 **Last Updated:** {formatted_time}"
         await update.message.reply_text(message, parse_mode='Markdown')
@@ -464,7 +308,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Get detailed status including balance, recent transactions, and monitoring."""
+    """Get detailed status including balance and today's transaction summary."""
     try:
         # Get balance
         balance_result = await api.get_balance()
@@ -472,43 +316,70 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         last_updated = balance_result.get('last_updated', 'Unknown')
         
         # Format timestamp
-        try:
-            dt = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
-            formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S UTC')
-        except:
-            formatted_time = last_updated
+        formatted_time = format_datetime_for_user(last_updated, 'full')
         
-        # Get recent transactions
-        recent_transactions = await api.get_transactions(limit=5)
+        # Get today's date range in GMT+3
+        now_gmt3 = datetime.now(GMT_PLUS_3)
+        today_start = now_gmt3.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = now_gmt3.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        # Get today's transactions
+        today_transactions = await api.get_transactions(
+            limit=100,  # Get enough to cover a full day
+            start_date=today_start,
+            end_date=today_end
+        )
         
         # Build status message (escape special characters for Markdown)
         status_message = "📊 *Fitness Rewards Status* 📊\n\n"
         status_message += f"💰 *Current Balance:* {balance_amount} points\n"
         status_message += f"📅 *Last Updated:* {formatted_time}\n"
         
-
-        # Add recent activity
-        if recent_transactions:
-            status_message += "\n📋 *Recent Activity (Last 5):*\n"
-            for transaction in recent_transactions:
-                # Format timestamp
-                try:
-                    dt = datetime.fromisoformat(transaction['timestamp'].replace('Z', '+00:00'))
-                    formatted_time = dt.strftime('%m/%d %H:%M')
-                except:
-                    formatted_time = "Unknown"
-                
-                type_emoji = "➕" if transaction['type'] == 'deposit' else "➖"
-                count = transaction['count']
-                # Escape special Markdown characters in name
-                name = escape_markdown(transaction['name'])
-                
-                status_message += f"{type_emoji} *{count}* pts - {name}\n"
-                status_message += f"   ⏰ {formatted_time}\n"
-        else:
-            status_message += "\n📋 *Recent Activity:* No transactions found\n"
+        # Add today's summary
+        today_formatted = now_gmt3.strftime('%Y-%m-%d')
+        status_message += f"\n� *Today's Summary ({today_formatted}):*\n"
         
-
+        if today_transactions:
+            # Group transactions by name and type, sum counts
+            summary = defaultdict(lambda: {'deposit': 0, 'withdraw': 0})
+            
+            for transaction in today_transactions:
+                name = transaction['name']
+                trans_type = transaction['type']
+                count = transaction['count']
+                summary[name][trans_type] += count
+            
+            # Calculate totals
+            total_deposits = sum(item['deposit'] for item in summary.values())
+            total_withdrawals = sum(item['withdraw'] for item in summary.values())
+            net_change = total_deposits - total_withdrawals
+            
+            # Display summary by activity
+            for name, amounts in summary.items():
+                deposits = amounts['deposit']
+                withdrawals = amounts['withdraw']
+                escaped_name = escape_markdown(name)
+                
+                if deposits > 0 and withdrawals > 0:
+                    net = deposits - withdrawals
+                    net_emoji = "➕" if net > 0 else "➖"
+                    status_message += f"🔄 *{escaped_name}:* ➕{deposits} ➖{withdrawals} ({net_emoji}{abs(net)})\n"
+                elif deposits > 0:
+                    status_message += f"➕ *{escaped_name}:* +{deposits} pts\n"
+                elif withdrawals > 0:
+                    status_message += f"➖ *{escaped_name}:* -{withdrawals} pts\n"
+            
+            # Add totals
+            status_message += f"\n📊 *Daily Totals:*\n"
+            status_message += f"➕ *Total Earned:* {total_deposits} pts\n"
+            status_message += f"➖ *Total Spent:* {total_withdrawals} pts\n"
+            
+            net_emoji = "🟢" if net_change > 0 else "🔴" if net_change < 0 else "⚪"
+            sign = "+" if net_change > 0 else ""
+            status_message += f"{net_emoji} *Net Change:* {sign}{net_change} pts\n"
+            
+        else:
+            status_message += "No transactions today yet\\.\n"
         
         await update.message.reply_text(status_message, parse_mode='Markdown')
         
@@ -527,12 +398,13 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
 
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Withdraw points with activity selection."""
+    """Withdraw points with optional activity name."""
     try:
         if not context.args:
             await update.message.reply_text(
                 "❌ Please specify the amount to withdraw.\n"
-                "Example: `/withdraw 50`"
+                "Usage: `/withdraw {amount}` or `/withdraw {amount} {activity_name}`\n"
+                "Example: `/withdraw 50` or `/withdraw 50 Watching TV`"
             )
             return
         
@@ -541,7 +413,8 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except ValueError:
             await update.message.reply_text(
                 "❌ Please provide a valid number.\n"
-                "Example: `/withdraw 50`"
+                "Usage: `/withdraw {amount}` or `/withdraw {amount} {activity_name}`\n"
+                "Example: `/withdraw 50` or `/withdraw 50 Gaming`"
             )
             return
         
@@ -549,39 +422,46 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("❌ Amount must be greater than 0.")
             return
         
-        # Create activity selection keyboard
-        keyboard = [
-            [InlineKeyboardButton("📺 Watching TV", callback_data=f"withdraw_tv_{amount}")],
-            [InlineKeyboardButton("🎮 Gaming", callback_data=f"withdraw_gaming_{amount}")],
-            [InlineKeyboardButton("🍿 Snack Break", callback_data=f"withdraw_snack_{amount}")],
-            [InlineKeyboardButton("📱 Social Media", callback_data=f"withdraw_social_{amount}")],
-            [InlineKeyboardButton("🎵 Music/Podcast", callback_data=f"withdraw_music_{amount}")],
-            [InlineKeyboardButton("📖 Reading", callback_data=f"withdraw_reading_{amount}")],
-            [InlineKeyboardButton("🎬 Movie Time", callback_data=f"withdraw_movie_{amount}")],
-            [InlineKeyboardButton("☕ Coffee Break", callback_data=f"withdraw_coffee_{amount}")],
-        ]
+        # Get activity name from remaining arguments or use default
+        if len(context.args) > 1:
+            activity_name = " ".join(context.args[1:])
+        else:
+            activity_name = "Custom"
         
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            f"💳 **Withdrawing {amount} points**\n\n"
-            "What activity are you doing?",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
+        # Perform the withdrawal
+        result = await api.withdraw_points(activity_name, amount)
+        
+        new_balance = result.get('balance', 'Unknown')
+        message = (
+            f"✅ **Withdrawal Successful!**\n\n"
+            f"� Withdrew **{amount}** points\n"
+            f"� Activity: {escape_markdown(activity_name)}\n"
+            f"💰 New Balance: **{new_balance}** points\n"
+            f"⏰ {get_current_time_gmt3('time')} GMT+3"
         )
+        
+        await update.message.reply_text(message, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Error in withdraw command: {e}")
-        await update.message.reply_text(
-            "❌ An error occurred. Please try again later."
-        )
+        if "insufficient" in str(e).lower() or "balance" in str(e).lower():
+            await update.message.reply_text(
+                f"❌ Insufficient balance to withdraw {amount} points.\n"
+                "Check your current balance with /balance"
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ Failed to withdraw points: {str(e)}"
+            )
 
 async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Deposit points with source selection."""
+    """Deposit points with optional source name."""
     try:
         if not context.args:
             await update.message.reply_text(
                 "❌ Please specify the amount to deposit.\n"
-                "Example: `/deposit 100`"
+                "Usage: `/deposit {amount}` or `/deposit {amount} {source_name}`\n"
+                "Example: `/deposit 100` or `/deposit 100 Workout Complete`"
             )
             return
         
@@ -590,7 +470,8 @@ async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except ValueError:
             await update.message.reply_text(
                 "❌ Please provide a valid number.\n"
-                "Example: `/deposit 100`"
+                "Usage: `/deposit {amount}` or `/deposit {amount} {source_name}`\n"
+                "Example: `/deposit 100` or `/deposit 100 Cardio Session`"
             )
             return
         
@@ -598,30 +479,30 @@ async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("❌ Amount must be greater than 0.")
             return
         
-        # Create source selection keyboard
-        keyboard = [
-            [InlineKeyboardButton("🏃‍♂️ Workout Complete", callback_data=f"deposit_workout_{amount}")],
-            [InlineKeyboardButton("🚴‍♀️ Cardio Session", callback_data=f"deposit_cardio_{amount}")],
-            [InlineKeyboardButton("🏋️‍♂️ Strength Training", callback_data=f"deposit_strength_{amount}")],
-            [InlineKeyboardButton("🧘‍♀️ Yoga/Meditation", callback_data=f"deposit_yoga_{amount}")],
-            [InlineKeyboardButton("🚶‍♂️ Daily Walk", callback_data=f"deposit_walk_{amount}")],
-            [InlineKeyboardButton("💪 Manual Bonus", callback_data=f"deposit_bonus_{amount}")],
-            [InlineKeyboardButton("🎯 Goal Achievement", callback_data=f"deposit_goal_{amount}")],
-            [InlineKeyboardButton("🔄 Other Activity", callback_data=f"deposit_other_{amount}")],
-        ]
+        # Get source name from remaining arguments or use default
+        if len(context.args) > 1:
+            source_name = " ".join(context.args[1:])
+        else:
+            source_name = "Custom"
         
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            f"💎 **Depositing {amount} points**\n\n"
-            "What's the source of these points?",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
+        # Perform the deposit
+        result = await api.deposit_points(source_name, amount)
+        
+        new_balance = result.get('balance', 'Unknown')
+        message = (
+            f"✅ **Deposit Successful!**\n\n"
+            f"� Deposited **{amount}** points\n"
+            f"🎯 Source: {escape_markdown(source_name)}\n"
+            f"� New Balance: **{new_balance}** points\n"
+            f"⏰ {get_current_time_gmt3('time')} GMT+3"
         )
+        
+        await update.message.reply_text(message, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Error in deposit command: {e}")
         await update.message.reply_text(
-            "❌ An error occurred. Please try again later."
+            f"❌ Failed to deposit points: {str(e)}"
         )
 
 async def transactions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -641,11 +522,7 @@ async def transactions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         for transaction in result:
             # Format timestamp
-            try:
-                dt = datetime.fromisoformat(transaction['timestamp'].replace('Z', '+00:00'))
-                formatted_time = dt.strftime('%m/%d %H:%M')
-            except:
-                formatted_time = transaction['timestamp']
+            formatted_time = format_datetime_for_user(transaction['timestamp'], 'short')
             
             type_emoji = "➕" if transaction['type'] == 'deposit' else "➖"
             count = transaction['count']
@@ -688,135 +565,6 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "❓ Unknown command. Type /help to see available commands."
     )
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle button callbacks from inline keyboards."""
-    query = update.callback_query
-    await query.answer()  # Acknowledge the callback
-    
-    callback_data = query.data
-    
-    try:
-        if callback_data.startswith("withdraw_"):
-            await handle_withdraw_callback(query, callback_data)
-        elif callback_data.startswith("deposit_"):
-            await handle_deposit_callback(query, callback_data)
-        else:
-            await query.edit_message_text("❌ Unknown action.")
-            
-    except Exception as e:
-        logger.error(f"Error handling button callback: {e}")
-        try:
-            await query.edit_message_text(
-                "❌ An error occurred while processing your request. Please try again."
-            )
-        except:
-            # If editing fails, send a new message
-            await query.message.reply_text(
-                "❌ An error occurred while processing your request. Please try again."
-            )
-
-async def handle_withdraw_callback(query, callback_data: str) -> None:
-    """Handle withdraw button callbacks."""
-    try:
-        # Parse callback data: withdraw_{activity}_{amount}
-        parts = callback_data.split("_")
-        if len(parts) < 3:
-            await query.edit_message_text("❌ Invalid withdraw data.")
-            return
-            
-        activity = parts[1]
-        amount = int(parts[2])
-        
-        # Map activity codes to display names
-        activity_names = {
-            'tv': 'Watching TV 📺',
-            'gaming': 'Gaming 🎮',
-            'snack': 'Snack Break 🍿',
-            'social': 'Social Media 📱',
-            'music': 'Music/Podcast 🎵',
-            'reading': 'Reading 📖',
-            'movie': 'Movie Time 🎬',
-            'coffee': 'Coffee Break ☕'
-        }
-        
-        activity_name = activity_names.get(activity, activity.title())
-        
-        # Perform the withdrawal
-        result = await api.withdraw_points(activity_name, amount)
-        
-        new_balance = result.get('balance', 'Unknown')
-        message = (
-            f"✅ **Withdrawal Successful!**\n\n"
-            f"💳 Withdrew **{amount}** points\n"
-            f"🎯 Activity: {activity_name}\n"
-            f"💰 New Balance: **{new_balance}** points\n"
-            f"⏰ {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
-        )
-        
-        await query.edit_message_text(message, parse_mode='Markdown')
-        
-    except ValueError:
-        await query.edit_message_text("❌ Invalid amount in withdraw data.")
-    except Exception as e:
-        logger.error(f"Error in withdraw callback: {e}")
-        if "insufficient" in str(e).lower() or "balance" in str(e).lower():
-            await query.edit_message_text(
-                f"❌ Insufficient balance to withdraw {amount} points.\n"
-                "Check your current balance with /balance"
-            )
-        else:
-            await query.edit_message_text(
-                f"❌ Failed to withdraw points: {str(e)}"
-            )
-
-async def handle_deposit_callback(query, callback_data: str) -> None:
-    """Handle deposit button callbacks."""
-    try:
-        # Parse callback data: deposit_{activity}_{amount}
-        parts = callback_data.split("_")
-        if len(parts) < 3:
-            await query.edit_message_text("❌ Invalid deposit data.")
-            return
-            
-        activity = parts[1]
-        amount = int(parts[2])
-        
-        # Map activity codes to display names
-        activity_names = {
-            'workout': 'Workout Complete 🏃‍♂️',
-            'cardio': 'Cardio Session 🚴‍♀️',
-            'strength': 'Strength Training 🏋️‍♂️',
-            'yoga': 'Yoga/Meditation 🧘‍♀️',
-            'walk': 'Daily Walk 🚶‍♂️',
-            'bonus': 'Manual Bonus 💪',
-            'goal': 'Goal Achievement 🎯',
-            'other': 'Other Activity 🔄'
-        }
-        
-        activity_name = activity_names.get(activity, activity.title())
-        
-        # Perform the deposit
-        result = await api.deposit_points(activity_name, amount)
-        
-        new_balance = result.get('balance', 'Unknown')
-        message = (
-            f"✅ **Deposit Successful!**\n\n"
-            f"💎 Deposited **{amount}** points\n"
-            f"🎯 Source: {activity_name}\n"
-            f"💰 New Balance: **{new_balance}** points\n"
-            f"⏰ {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
-        )
-        
-        await query.edit_message_text(message, parse_mode='Markdown')
-        
-    except ValueError:
-        await query.edit_message_text("❌ Invalid amount in deposit data.")
-    except Exception as e:
-        logger.error(f"Error in deposit callback: {e}")
-        await query.edit_message_text(
-            f"❌ Failed to deposit points: {str(e)}"
-        )
-
 async def post_init(application: Application) -> None:
     """Called after the application is initialized."""
     # Set up bot commands for autocomplete
@@ -838,30 +586,12 @@ async def post_init(application: Application) -> None:
     except Exception as e:
         logger.error(f"Failed to set bot commands: {e}")
     
-    # Start balance summary monitoring task
-    global balance_summary_task
-    try:
-        balance_summary_task = asyncio.create_task(balance_summary_monitor(application))
-        logger.info("Balance summary monitoring task started")
-    except Exception as e:
-        logger.error(f"Failed to start balance summary monitoring task: {e}")
     
 
 
 async def post_shutdown(application: Application) -> None:
     """Called before the application shuts down."""
-    global balance_summary_task
-    
-    # Cancel balance summary monitoring task
-    if balance_summary_task and not balance_summary_task.done():
-        balance_summary_task.cancel()
-        try:
-            await balance_summary_task
-        except asyncio.CancelledError:
-            logger.info("Balance summary monitoring task cancelled successfully")
-        except Exception as e:
-            logger.error(f"Error cancelling balance summary monitoring task: {e}")
-
+   
 
 def main() -> None:
     """Start the bot."""
@@ -878,9 +608,6 @@ def main() -> None:
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("deposit", deposit))
     application.add_handler(CommandHandler("transactions", transactions))
-    
-    # Add callback query handler for buttons
-    application.add_handler(CallbackQueryHandler(button_callback))
     
     # Add handler for unknown commands
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
