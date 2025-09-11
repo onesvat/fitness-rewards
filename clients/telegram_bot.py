@@ -207,27 +207,27 @@ def escape_markdown(text: str) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     welcome_text = """
-🏃‍♂️ **Welcome to Fitness Rewards Bot!** 🏃‍♀️
+**Fitness Rewards Bot'a Hoşgeldiniz!**
 
-This bot helps you manage your fitness reward points. Here are the available commands:
+Bu bot fitness ödül puanlarınızı yönetmenize yardımcı olur. Kullanılabilir komutlar:
 
-🔹 /balance - Check your current point balance
-🔹 /status - Get detailed balance and activity status
-🔹 /withdraw {amount} [name] - Withdraw points (e.g., /withdraw 50 or /withdraw 50 Watching TV)
-🔹 /deposit {amount} [name] - Add points (e.g., /deposit 100 or /deposit 100 Workout)
-🔹 /transactions - View recent transaction history
-🔹 /register - Register for balance change notifications
-🔹 /unregister - Unregister from balance change notifications
-🔹 /help - Show this help message
+/balance - Mevcut puan bakiyenizi kontrol edin
+/status - Detaylı bakiye ve aktivite durumu
+/withdraw {miktar} [isim] - Puan çekin (örn. /withdraw 50 veya /withdraw 50 TV İzleme)
+/deposit {miktar} [isim] - Puan ekleyin (örn. /deposit 100 veya /deposit 100 Egzersiz)
+/transactions - Son işlem geçmişini görüntüleyin
+/register - Bakiye değişikliği bildirimlerine kaydolun
+/unregister - Bakiye değişikliği bildirimlerinden çıkın
+/help - Bu yardım mesajını göster
 
-**Examples:**
-🔹 /withdraw 30 - Withdraw 30 points for "General Activity"
-🔹 /withdraw 30 Watching TV - Withdraw 30 points for "Watching TV"
-🔹 /deposit 50 - Add 50 points as "Manual Deposit"
-🔹 /deposit 50 Cardio Session - Add 50 points for "Cardio Session"
-🔹 /transactions - See your last 10 transactions
+**Örnekler:**
+/withdraw 30 - "Genel Aktivite" için 30 puan çek
+/withdraw 30 TV İzleme - "TV İzleme" için 30 puan çek
+/deposit 50 - "Manuel Yatırım" olarak 50 puan ekle
+/deposit 50 Kardiyyo Seansı - "Kardiyyo Seansı" için 50 puan ekle
+/transactions - Son 10 işleminizi görün
 
-Get started by typing /balance to see your current points!
+Başlamak için mevcut puanlarınızı görmek için /balance yazın!
     """
     await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
@@ -250,13 +250,14 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         await update.message.reply_text(
             f"✅ {result['message']}\n\n"
-            "You will now receive notifications when your balance changes!"
+            "Artık bakiyeniz değiştiğinde bildirim alacaksınız!"
+            "Bildirimleri devre dışı bırakmak için istediğiniz zaman /unregister kullanabilirsiniz."
         )
         
     except Exception as e:
         logger.error(f"Error registering chat: {e}")
         await update.message.reply_text(
-            "❌ Failed to register for notifications. Please try again later."
+            "❌ Bildirimlere kaydolunamadı. Lütfen daha sonra tekrar deneyin."
         )
 
 async def unregister(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -266,26 +267,16 @@ async def unregister(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         result = await api.unregister_chat(chat_id=chat_id)
         
-        if result['status'] == 'success':
-            await update.message.reply_text(
-                f"✅ {result['message']}\n\n"
-                "You will no longer receive balance change notifications.\n"
-                "You can use `/register` again anytime to re-enable notifications."
-            )
-        elif result['status'] == 'info':
-            await update.message.reply_text(
-                f"ℹ️ {result['message']}\n\n"
-                "Use `/register` if you want to enable notifications."
-            )
-        else:
-            await update.message.reply_text(
-                f"⚠️ {result['message']}"
-            )
+        await update.message.reply_text(
+                "Artık bakiyeniz değiştiğinde bildirim almayacaksınız.\n"
+                "Bildirimleri yeniden etkinleştirmek için istediğiniz zaman /register kullanabilirsiniz."
+        )
+        
         
     except Exception as e:
         logger.error(f"Error unregistering chat: {e}")
         await update.message.reply_text(
-            "❌ Failed to unregister from notifications. Please try again later."
+            "❌ Bildirim kaydı kaldırılamadı. Lütfen daha sonra tekrar deneyin."
         )
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -297,14 +288,14 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Parse and format the timestamp
         formatted_time = format_datetime_for_user(last_updated, 'full')
-        
-        message = f"💰 **Current Balance:** {balance_amount} points\n📅 **Last Updated:** {formatted_time}"
+
+        message = f"💰 **Bakiye:** {balance_amount} puan\n📅 **Son Güncelleme:** {formatted_time}"
         await update.message.reply_text(message, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Error getting balance: {e}")
         await update.message.reply_text(
-            "❌ Failed to get balance. Please try again later."
+            "❌ Bakiye alınamadı. Lütfen daha sonra tekrar deneyin."
         )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -331,13 +322,13 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         
         # Build status message (escape special characters for Markdown)
-        status_message = "📊 *Fitness Rewards Status* 📊\n\n"
-        status_message += f"💰 *Current Balance:* {balance_amount} points\n"
-        status_message += f"📅 *Last Updated:* {formatted_time}\n"
-        
+        status_message = "📊 *Fitnes Ödül Durumu* 📊\n\n"
+        status_message += f"💰 *Bakiye:* {balance_amount} puan\n"
+        status_message += f"📅 *Son Güncelleme:* {formatted_time}\n"
+
         # Add today's summary
         today_formatted = now_gmt3.strftime('%Y-%m-%d')
-        status_message += f"\n� *Today's Summary ({today_formatted}):*\n"
+        status_message += f"\n *Bugün Özeti ({today_formatted}):*\n"
         
         if today_transactions:
             # Group transactions by name and type, sum counts
@@ -365,22 +356,22 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     net_emoji = "➕" if net > 0 else "➖"
                     status_message += f"🔄 *{escaped_name}:* ➕{deposits} ➖{withdrawals} ({net_emoji}{abs(net)})\n"
                 elif deposits > 0:
-                    status_message += f"➕ *{escaped_name}:* +{deposits} pts\n"
+                    status_message += f"➕ *{escaped_name}:* +{deposits} puan\n"
                 elif withdrawals > 0:
-                    status_message += f"➖ *{escaped_name}:* -{withdrawals} pts\n"
+                    status_message += f"➖ *{escaped_name}:* -{withdrawals} puan\n"
             
             # Add totals
-            status_message += f"\n📊 *Daily Totals:*\n"
-            status_message += f"➕ *Total Earned:* {total_deposits} pts\n"
-            status_message += f"➖ *Total Spent:* {total_withdrawals} pts\n"
-            
+            status_message += f"\n📊 *Günlük Toplamlar:*\n"
+            status_message += f"➕ *Toplam Kazanılan:* {total_deposits} puan\n"
+            status_message += f"➖ *Toplam Harcanan:* {total_withdrawals} puan\n"
+
             net_emoji = "🟢" if net_change > 0 else "🔴" if net_change < 0 else "⚪"
             sign = "+" if net_change > 0 else ""
-            status_message += f"{net_emoji} *Net Change:* {sign}{net_change} pts\n"
-            
+            status_message += f"{net_emoji} *Net Değişim:* {sign}{net_change} puan\n"
+
         else:
-            status_message += "No transactions today yet\\.\n"
-        
+            status_message += "Bugün için henüz işlem yok.\n"
+
         await update.message.reply_text(status_message, parse_mode='Markdown')
         
     except Exception as e:
@@ -402,9 +393,9 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         if not context.args:
             await update.message.reply_text(
-                "❌ Please specify the amount to withdraw.\n"
-                "Usage: `/withdraw {amount}` or `/withdraw {amount} {activity_name}`\n"
-                "Example: `/withdraw 50` or `/withdraw 50 Watching TV`"
+                "❌ Lütfen çekilecek miktarı belirtin.\n"
+                "Kullanım: `/withdraw {miktar}` veya `/withdraw {miktar} {aktivite}`\n"
+                "Örnek: `/withdraw 50` veya `/withdraw 50 TV İzleme`"
             )
             return
         
@@ -412,31 +403,31 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             amount = int(context.args[0])
         except ValueError:
             await update.message.reply_text(
-                "❌ Please provide a valid number.\n"
-                "Usage: `/withdraw {amount}` or `/withdraw {amount} {activity_name}`\n"
-                "Example: `/withdraw 50` or `/withdraw 50 Gaming`"
+                "❌ Lütfen geçerli bir sayı girin.\n"
+                "Kullanım: `/withdraw {miktar}` veya `/withdraw {miktar} {aktivite}`\n"
+                "Örnek: `/withdraw 50` veya `/withdraw 50 Oyun`"
             )
             return
         
         if amount <= 0:
-            await update.message.reply_text("❌ Amount must be greater than 0.")
+            await update.message.reply_text("❌ Miktar 0'dan büyük olmalıdır.")
             return
         
         # Get activity name from remaining arguments or use default
         if len(context.args) > 1:
             activity_name = " ".join(context.args[1:])
         else:
-            activity_name = "Custom"
+            activity_name = "Manuel"
         
         # Perform the withdrawal
         result = await api.withdraw_points(activity_name, amount)
         
         new_balance = result.get('balance', 'Unknown')
         message = (
-            f"✅ **Withdrawal Successful!**\n\n"
-            f"� Withdrew **{amount}** points\n"
-            f"� Activity: {escape_markdown(activity_name)}\n"
-            f"💰 New Balance: **{new_balance}** points\n"
+            f"✅ **Çekme işlemi başarılı!**\n\n"
+            f"➖ **{amount}** puan çekildi\n"
+            f"🏷️ Aktivite: {escape_markdown(activity_name)}\n"
+            f"💰 Yeni Bakiye: **{new_balance}** puan\n"
             f"⏰ {get_current_time_gmt3('time')} GMT+3"
         )
         
@@ -446,22 +437,22 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Error in withdraw command: {e}")
         if "insufficient" in str(e).lower() or "balance" in str(e).lower():
             await update.message.reply_text(
-                f"❌ Insufficient balance to withdraw {amount} points.\n"
-                "Check your current balance with /balance"
+                f"❌ {amount} puan çekmek için yeterli bakiyeniz yok.\n"
+                "Mevcut bakiyenizi /balance ile kontrol edebilirsiniz."
             )
         else:
             await update.message.reply_text(
-                f"❌ Failed to withdraw points: {str(e)}"
+                f"❌ Puan çekme işlemi başarısız oldu: {str(e)}"
             )
-
+            
 async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Deposit points with optional source name."""
+    """Puan ekleme işlemi (isteğe bağlı kaynak adı ile)."""
     try:
         if not context.args:
             await update.message.reply_text(
-                "❌ Please specify the amount to deposit.\n"
-                "Usage: `/deposit {amount}` or `/deposit {amount} {source_name}`\n"
-                "Example: `/deposit 100` or `/deposit 100 Workout Complete`"
+                "❌ Lütfen eklenecek miktarı belirtin.\n"
+                "Kullanım: `/deposit {miktar}` veya `/deposit {miktar} {kaynak_adı}`\n"
+                "Örnek: `/deposit 100` veya `/deposit 100 Egzersiz Tamamlandı`"
             )
             return
         
@@ -469,31 +460,31 @@ async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             amount = int(context.args[0])
         except ValueError:
             await update.message.reply_text(
-                "❌ Please provide a valid number.\n"
-                "Usage: `/deposit {amount}` or `/deposit {amount} {source_name}`\n"
-                "Example: `/deposit 100` or `/deposit 100 Cardio Session`"
+                "❌ Lütfen geçerli bir sayı girin.\n"
+                "Kullanım: `/deposit {miktar}` veya `/deposit {miktar} {kaynak_adı}`\n"
+                "Örnek: `/deposit 100` veya `/deposit 100 Kardiyo Seansı`"
             )
             return
         
         if amount <= 0:
-            await update.message.reply_text("❌ Amount must be greater than 0.")
+            await update.message.reply_text("❌ Miktar 0'dan büyük olmalıdır.")
             return
         
-        # Get source name from remaining arguments or use default
+        # Kaynak adını kalan argümanlardan al veya varsayılanı kullan
         if len(context.args) > 1:
             source_name = " ".join(context.args[1:])
         else:
-            source_name = "Custom"
+            source_name = "Manuel"
         
-        # Perform the deposit
+        # Puan ekleme işlemini gerçekleştir
         result = await api.deposit_points(source_name, amount)
         
         new_balance = result.get('balance', 'Unknown')
         message = (
-            f"✅ **Deposit Successful!**\n\n"
-            f"� Deposited **{amount}** points\n"
-            f"🎯 Source: {escape_markdown(source_name)}\n"
-            f"� New Balance: **{new_balance}** points\n"
+            f"✅ **Yatırma işlemi başarılı!**\n\n"
+            f"➕ **{amount}** puan eklendi\n"
+            f"🏷️ Kaynak: {escape_markdown(source_name)}\n"
+            f"💰 Yeni Bakiye: **{new_balance}** puan\n"
             f"⏰ {get_current_time_gmt3('time')} GMT+3"
         )
         
@@ -502,90 +493,90 @@ async def deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Error in deposit command: {e}")
         await update.message.reply_text(
-            f"❌ Failed to deposit points: {str(e)}"
+            f"❌ Puan ekleme işlemi başarısız oldu: {str(e)}"
         )
 
 async def transactions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Get recent transactions."""
+    """Son işlemleri getirir."""
     try:
         limit = 10
         if context.args and context.args[0].isdigit():
-            limit = min(int(context.args[0]), 20)  # Max 20 transactions
+            limit = min(int(context.args[0]), 20)  # Maksimum 20 işlem
         
         result = await api.get_transactions(limit=limit)
         
         if not result:
-            await update.message.reply_text("📝 No transactions found.")
+            await update.message.reply_text("📝 Hiç işlem bulunamadı.")
             return
         
-        message = f"📋 **Recent Transactions (Last {len(result)}):**\n\n"
+        message = f"📋 **Son İşlemler (Son {len(result)}):**\n\n"
         
         for transaction in result:
-            # Format timestamp
+            # Zaman damgasını biçimlendir
             formatted_time = format_datetime_for_user(transaction['timestamp'], 'short')
             
             type_emoji = "➕" if transaction['type'] == 'deposit' else "➖"
             count = transaction['count']
-            # Escape special Markdown characters in name
+            # Ad içindeki özel Markdown karakterlerini kaçır
             name = escape_markdown(transaction['name'])
             balance_after = transaction['balance_after']
             
-            message += f"{type_emoji} **{count}** pts - {name}\n"
-            message += f"   ⏰ {formatted_time} | Balance: {balance_after}\n\n"
+            message += f"{type_emoji} **{count}** puan - {name}\n"
+            message += f"   ⏰ {formatted_time} | Bakiye: {balance_after}\n\n"
         
-        # Split message if too long
+        # Mesaj çok uzunsa böl
         if len(message) > 4000:
             messages = [message[i:i+4000] for i in range(0, len(message), 4000)]
             for i, msg in enumerate(messages):
                 try:
                     await update.message.reply_text(msg, parse_mode='Markdown')
                 except Exception as e:
-                    logger.warning(f"Failed to send transactions message {i+1} with Markdown: {e}")
-                    # Fallback without Markdown
+                    logger.warning(f"İşlem mesajı {i+1} Markdown ile gönderilemedi: {e}")
+                    # Markdown olmadan gönder
                     fallback_msg = msg.replace('*', '').replace('_', '')
                     await update.message.reply_text(fallback_msg)
         else:
             try:
                 await update.message.reply_text(message, parse_mode='Markdown')
             except Exception as e:
-                logger.warning(f"Failed to send transactions with Markdown: {e}")
-                # Fallback without Markdown
+                logger.warning(f"İşlemler Markdown ile gönderilemedi: {e}")
+                # Markdown olmadan gönder
                 fallback_message = message.replace('*', '').replace('_', '')
                 await update.message.reply_text(fallback_message)
         
     except Exception as e:
-        logger.error(f"Error getting transactions: {e}")
+        logger.error(f"İşlemler alınırken hata: {e}")
         await update.message.reply_text(
-            "❌ Failed to get transactions. Please try again later."
+            "❌ İşlemler alınamadı. Lütfen daha sonra tekrar deneyin."
         )
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle unknown commands."""
+    """Bilinmeyen komutları karşılar."""
     await update.message.reply_text(
-        "❓ Unknown command. Type /help to see available commands."
+        "❓ Bilinmeyen komut. Mevcut komutları görmek için /help yazın."
     )
 
 async def post_init(application: Application) -> None:
-    """Called after the application is initialized."""
-    # Set up bot commands for autocomplete
+    """Uygulama başlatıldıktan sonra çağrılır."""
+    # Otomatik tamamlama için bot komutlarını ayarla
     commands = [
-        BotCommand("start", "Welcome message and instructions"),
-        BotCommand("balance", "Check your current point balance"),
-        BotCommand("status", "Get detailed balance and activity status"),
-        BotCommand("withdraw", "Withdraw points (usage: /withdraw {amount})"),
-        BotCommand("deposit", "Add points manually (usage: /deposit {amount})"),
-        BotCommand("transactions", "View recent transaction history"),
-        BotCommand("register", "Register for balance change notifications"),
-        BotCommand("unregister", "Unregister from balance change notifications"),
-        BotCommand("help", "Show help message"),
+        BotCommand("start", "Karşılama mesajı ve talimatlar"),
+        BotCommand("balance", "Mevcut puan bakiyenizi kontrol edin"),
+        BotCommand("status", "Detaylı bakiye ve aktivite durumu"),
+        BotCommand("withdraw", "Puan çek (kullanım: /withdraw {miktar})"),
+        BotCommand("deposit", "Manuel puan ekle (kullanım: /deposit {miktar})"),
+        BotCommand("transactions", "Son işlem geçmişini görüntüle"),
+        BotCommand("register", "Bakiye değişikliği bildirimlerine kaydol"),
+        BotCommand("unregister", "Bakiye değişikliği bildirimlerinden çık"),
+        BotCommand("help", "Yardım mesajını göster"),
     ]
     
     try:
         await application.bot.set_my_commands(commands)
-        logger.info("Bot commands set successfully for autocomplete")
+        logger.info("Bot komutları otomatik tamamlama için başarıyla ayarlandı")
     except Exception as e:
-        logger.error(f"Failed to set bot commands: {e}")
-    
+        logger.error(f"Bot komutları ayarlanamadı: {e}")
+            
     
 
 
