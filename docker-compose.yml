@@ -43,7 +43,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - SERVER_URL=${SERVER_URL:-http://api:8000}
       - API_KEY=${API_KEY:-your-secret-api-key-123}
-      - NOTIFICATION_EDIT_WINDOW=${NOTIFICATION_EDIT_WINDOW:-5}
+      - BALANCE_CHECK_INTERVAL=${BALANCE_CHECK_INTERVAL:-60}
     restart: unless-stopped
     depends_on:
       - api

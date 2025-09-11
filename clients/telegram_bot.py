@@ -4,15 +4,6 @@ Telegram Bot for Fitness Rewards System
 
 This bot provides an interface to interact with the fitness rewards server
 through Telegram commands.
-
-Commands:
-- /start - Welcome message and instructions
-- /register - Register chat for notifications
-- /balance - Get current point balance
-- /withdraw {amount} - Withdraw points for an activity
-- /deposit {amount} - Deposit points manually
-- /transactions - Get recent transactions
-- /help - Show help message
 """
 
 import os
@@ -42,9 +33,10 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 API_KEY = os.getenv("API_KEY", "your-secret-api-key-123")
-NOTIFICATION_EDIT_WINDOW = int(os.getenv("NOTIFICATION_EDIT_WINDOW", "5"))  # minutes
 BALANCE_MONITORING_ENABLED = os.getenv("BALANCE_MONITORING_ENABLED", "true").lower() == "true"
 BALANCE_CHECK_INTERVAL = int(os.getenv("BALANCE_CHECK_INTERVAL", "5"))  # seconds
+LOW_BALANCE_THRESHOLD = int(os.getenv("LOW_BALANCE_THRESHOLD", "50"))  # points
+MAX_TRANSACTIONS_IN_NOTIFICATION = int(os.getenv("MAX_TRANSACTIONS_IN_NOTIFICATION", "3"))  # number of transactions
 
 if not BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
@@ -53,6 +45,7 @@ if not BOT_TOKEN:
 last_notification_messages: Dict[int, Dict[str, Any]] = {}
 last_known_balance: Optional[int] = None
 monitoring_task: Optional[asyncio.Task] = None
+low_balance_warning_sent: bool = False
 
 class FitnessRewardsAPI:
     """API client for the fitness rewards server."""
@@ -138,9 +131,30 @@ class FitnessRewardsAPI:
             )
             response.raise_for_status()
             return response.json()
+    
+    async def unregister_chat(self, chat_id: int) -> Dict[str, Any]:
+        """Unregister a chat from notifications."""
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/unregister_chat",
+                params={"chat_id": chat_id},
+                headers=self.headers
+            )
+            response.raise_for_status()
+            return response.json()
 
 # Initialize API client
 api = FitnessRewardsAPI(SERVER_URL, API_KEY)
+
+def escape_markdown(text: str) -> str:
+    """Escape special characters for Telegram Markdown formatting."""
+    if not text:
+        return text
+    # Escape characters that have special meaning in Markdown
+    special_chars = ['*', '_', '[', ']', '(', ')', '`', '~']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
@@ -150,10 +164,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 This bot helps you manage your fitness reward points. Here are the available commands:
 
 🔹 `/balance` - Check your current point balance
+🔹 `/status` - Get detailed balance and activity status
 🔹 `/withdraw {amount}` - Withdraw points for activities (e.g., `/withdraw 50`)
 🔹 `/deposit {amount}` - Add points manually (e.g., `/deposit 100`)
 🔹 `/transactions` - View recent transaction history
 🔹 `/register` - Register for balance change notifications
+🔹 `/unregister` - Unregister from balance change notifications
 🔹 `/monitoring` - Check balance monitoring status
 🔹 `/help` - Show this help message
 
@@ -194,6 +210,35 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "❌ Failed to register for notifications. Please try again later."
         )
 
+async def unregister(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Unregister the chat from notifications."""
+    try:
+        chat_id = update.effective_chat.id
+        
+        result = await api.unregister_chat(chat_id=chat_id)
+        
+        if result['status'] == 'success':
+            await update.message.reply_text(
+                f"✅ {result['message']}\n\n"
+                "You will no longer receive balance change notifications.\n"
+                "You can use `/register` again anytime to re-enable notifications."
+            )
+        elif result['status'] == 'info':
+            await update.message.reply_text(
+                f"ℹ️ {result['message']}\n\n"
+                "Use `/register` if you want to enable notifications."
+            )
+        else:
+            await update.message.reply_text(
+                f"⚠️ {result['message']}"
+            )
+        
+    except Exception as e:
+        logger.error(f"Error unregistering chat: {e}")
+        await update.message.reply_text(
+            "❌ Failed to unregister from notifications. Please try again later."
+        )
+
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Get current balance."""
     try:
@@ -216,6 +261,85 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "❌ Failed to get balance. Please try again later."
         )
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Get detailed status including balance, recent transactions, and monitoring."""
+    try:
+        # Get balance
+        balance_result = await api.get_balance()
+        balance_amount = balance_result.get('balance', 0)
+        last_updated = balance_result.get('last_updated', 'Unknown')
+        
+        # Format timestamp
+        try:
+            dt = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+            formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+        except:
+            formatted_time = last_updated
+        
+        # Get recent transactions
+        recent_transactions = await api.get_transactions(limit=5)
+        
+        # Build status message (escape special characters for Markdown)
+        status_message = "📊 *Fitness Rewards Status* 📊\n\n"
+        status_message += f"💰 *Current Balance:* {balance_amount} points\n"
+        status_message += f"📅 *Last Updated:* {formatted_time}\n"
+        
+        # Add balance status
+        if balance_amount <= 0:
+            status_message += "🚫 *Status:* OUT OF POINTS!\n"
+        elif balance_amount <= LOW_BALANCE_THRESHOLD:
+            status_message += "⚠️ *Status:* LOW BALANCE WARNING\n"
+        else:
+            status_message += "✅ *Status:* Good balance\n"
+        
+        # Add recent activity
+        if recent_transactions:
+            status_message += "\n📋 *Recent Activity (Last 5):*\n"
+            for transaction in recent_transactions:
+                # Format timestamp
+                try:
+                    dt = datetime.fromisoformat(transaction['timestamp'].replace('Z', '+00:00'))
+                    formatted_time = dt.strftime('%m/%d %H:%M')
+                except:
+                    formatted_time = "Unknown"
+                
+                type_emoji = "➕" if transaction['type'] == 'deposit' else "➖"
+                count = transaction['count']
+                # Escape special Markdown characters in name
+                name = escape_markdown(transaction['name'])
+                
+                status_message += f"{type_emoji} *{count}* pts - {name}\n"
+                status_message += f"   ⏰ {formatted_time}\n"
+        else:
+            status_message += "\n📋 *Recent Activity:* No transactions found\n"
+        
+        # Add monitoring status
+        global monitoring_task
+        if BALANCE_MONITORING_ENABLED:
+            monitoring_active = monitoring_task and not monitoring_task.done()
+            status_emoji = "🟢" if monitoring_active else "🔴"
+            status_text = "ACTIVE" if monitoring_active else "INACTIVE"
+            status_message += f"\n🔔 *Monitoring:* {status_emoji} {status_text}\n"
+            status_message += f"⚠️ *Low Balance Alert:* {LOW_BALANCE_THRESHOLD} points"
+        else:
+            status_message += "\n🔔 *Monitoring:* 🔴 DISABLED"
+        
+        await update.message.reply_text(status_message, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Error getting status: {e}")
+        # Fallback to plain text if Markdown fails
+        try:
+            await update.message.reply_text(
+                f"📊 Fitness Rewards Status 📊\n\n"
+                f"💰 Current Balance: {balance_amount} points\n"
+                f"❌ Error displaying detailed status. Use /balance and /transactions separately."
+            )
+        except:
+            await update.message.reply_text(
+                "❌ Failed to get status. Please try again later."
+            )
 
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Withdraw points with activity selection."""
@@ -340,7 +464,8 @@ async def transactions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             
             type_emoji = "➕" if transaction['type'] == 'deposit' else "➖"
             count = transaction['count']
-            name = transaction['name']
+            # Escape special Markdown characters in name
+            name = escape_markdown(transaction['name'])
             balance_after = transaction['balance_after']
             
             message += f"{type_emoji} **{count}** pts - {name}\n"
@@ -349,10 +474,22 @@ async def transactions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Split message if too long
         if len(message) > 4000:
             messages = [message[i:i+4000] for i in range(0, len(message), 4000)]
-            for msg in messages:
-                await update.message.reply_text(msg, parse_mode='Markdown')
+            for i, msg in enumerate(messages):
+                try:
+                    await update.message.reply_text(msg, parse_mode='Markdown')
+                except Exception as e:
+                    logger.warning(f"Failed to send transactions message {i+1} with Markdown: {e}")
+                    # Fallback without Markdown
+                    fallback_msg = msg.replace('*', '').replace('_', '')
+                    await update.message.reply_text(fallback_msg)
         else:
-            await update.message.reply_text(message, parse_mode='Markdown')
+            try:
+                await update.message.reply_text(message, parse_mode='Markdown')
+            except Exception as e:
+                logger.warning(f"Failed to send transactions with Markdown: {e}")
+                # Fallback without Markdown
+                fallback_message = message.replace('*', '').replace('_', '')
+                await update.message.reply_text(fallback_message)
         
     except Exception as e:
         logger.error(f"Error getting transactions: {e}")
@@ -360,179 +497,9 @@ async def transactions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "❌ Failed to get transactions. Please try again later."
         )
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle button callbacks."""
-    query = update.callback_query
-    await query.answer()
-    
-    try:
-        data = query.data
-        
-        if data == "restart_monitoring":
-            # Restart monitoring
-            await stop_balance_monitoring()
-            await start_balance_monitoring(context)
-            await query.edit_message_text(
-                "🔄 **Monitoring Restarted**\n\n"
-                f"Balance monitoring has been restarted.\n"
-                f"Check interval: {BALANCE_CHECK_INTERVAL} seconds",
-                parse_mode='Markdown'
-            )
-            return
-        
-        parts = data.split('_')
-        
-        if len(parts) < 3:
-            await query.edit_message_text("❌ Invalid action.")
-            return
-        
-        action = parts[0]  # 'withdraw' or 'deposit'
-        activity = parts[1]  # activity/source name
-        amount = int(parts[2])
-        
-        # Map activity codes to readable names
-        activity_names = {
-            'tv': 'watching TV',
-            'gaming': 'gaming',
-            'snack': 'snack break',
-            'social': 'social media',
-            'music': 'music/podcast',
-            'reading': 'reading',
-            'movie': 'movie time',
-            'coffee': 'coffee break',
-            'workout': 'workout session',
-            'cardio': 'cardio session',
-            'strength': 'strength training',
-            'yoga': 'yoga/meditation',
-            'walk': 'daily walk',
-            'bonus': 'manual bonus',
-            'goal': 'goal achievement',
-            'other': 'other activity'
-        }
-        
-        activity_name = activity_names.get(activity, activity)
-        
-        if action == 'withdraw':
-            result = await api.withdraw_points(activity_name, amount)
-            emoji = "💳"
-            action_text = "Withdrew"
-        else:  # deposit
-            result = await api.deposit_points(activity_name, amount)
-            emoji = "💎"
-            action_text = "Deposited"
-        
-        balance_key = 'balance_remaining' if action == 'withdraw' else 'balance_total'
-        new_balance = result.get(balance_key, 0)
-        
-        success_message = (
-            f"{emoji} **{action_text} {amount} points**\n\n"
-            f"🎯 **Activity:** {activity_name.title()}\n"
-            f"💰 **New Balance:** {new_balance} points\n"
-            f"✅ **Status:** Success"
-        )
-        
-        await query.edit_message_text(success_message, parse_mode='Markdown')
-        
-        # Send notification to registered chats
-        await send_balance_notification(
-            context, 
-            action, 
-            amount, 
-            activity_name, 
-            new_balance,
-            exclude_chat_id=query.message.chat_id
-        )
-        
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 400:
-            error_detail = e.response.json().get('detail', 'Bad request')
-            await query.edit_message_text(f"❌ {error_detail}")
-        else:
-            await query.edit_message_text("❌ Server error. Please try again later.")
-    except Exception as e:
-        logger.error(f"Error in button callback: {e}")
-        await query.edit_message_text("❌ An error occurred. Please try again later.")
-
-async def send_balance_notification(context: ContextTypes.DEFAULT_TYPE, action: str, 
-                                  amount: int, activity: str, new_balance: int, 
-                                  exclude_chat_id: int = None) -> None:
-    """Send balance change notifications to registered chats."""
-    try:
-        # Get registered chats from the API
-        chats = await api.get_registered_chats()
-        
-        emoji = "💳" if action == 'withdraw' else "💎"
-        action_text = "Withdrew" if action == 'withdraw' else "Deposited"
-        
-        notification_text = (
-            f"🔔 **Balance Update**\n\n"
-            f"{emoji} {action_text} **{amount}** points\n"
-            f"🎯 Activity: {activity.title()}\n"
-            f"💰 New Balance: **{new_balance}** points"
-        )
-        
-        current_time = datetime.now(timezone.utc)
-        
-        for chat_info in chats:
-            chat_id = chat_info['chat_id']
-            
-            # Skip the chat that initiated the action
-            if exclude_chat_id and chat_id == exclude_chat_id:
-                continue
-            
-            try:
-                # Check if we should edit an existing message or send a new one
-                should_edit = False
-                if chat_id in last_notification_messages:
-                    last_msg_info = last_notification_messages[chat_id]
-                    time_diff = current_time - last_msg_info['timestamp']
-                    
-                    if time_diff.total_seconds() < (NOTIFICATION_EDIT_WINDOW * 60):
-                        should_edit = True
-                
-                if should_edit:
-                    # Edit the existing message
-                    msg_info = last_notification_messages[chat_id]
-                    try:
-                        await context.bot.edit_message_text(
-                            chat_id=chat_id,
-                            message_id=msg_info['message_id'],
-                            text=notification_text,
-                            parse_mode='Markdown'
-                        )
-                        # Update timestamp
-                        last_notification_messages[chat_id]['timestamp'] = current_time
-                    except Exception as edit_error:
-                        logger.warning(f"Failed to edit message for chat {chat_id}: {edit_error}")
-                        # If edit fails, send a new message
-                        should_edit = False
-                
-                if not should_edit:
-                    # Send a new message
-                    message = await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=notification_text,
-                        parse_mode='Markdown'
-                    )
-                    
-                    # Store message info for potential future edits
-                    last_notification_messages[chat_id] = {
-                        'message_id': message.message_id,
-                        'timestamp': current_time
-                    }
-                
-            except Exception as e:
-                logger.warning(f"Failed to send notification to chat {chat_id}: {e}")
-                # Remove chat from tracking if it's not accessible
-                if chat_id in last_notification_messages:
-                    del last_notification_messages[chat_id]
-    
-    except Exception as e:
-        logger.error(f"Error sending notifications: {e}")
-
 async def monitor_balance_changes(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Monitor balance changes from external sources and send notifications."""
-    global last_known_balance
+    """Monitor balance changes and send notifications for all changes."""
+    global last_known_balance, low_balance_warning_sent
     
     logger.info("Starting balance monitoring...")
     
@@ -541,6 +508,14 @@ async def monitor_balance_changes(context: ContextTypes.DEFAULT_TYPE) -> None:
         balance_data = await api.get_balance()
         last_known_balance = balance_data.get('balance', 0)
         logger.info(f"Initial balance: {last_known_balance}")
+        
+        # Check if we need to send a low balance warning on startup
+        if last_known_balance <= LOW_BALANCE_THRESHOLD:
+            await send_low_balance_notification(context, last_known_balance)
+            low_balance_warning_sent = True
+        else:
+            low_balance_warning_sent = False
+            
     except Exception as e:
         logger.error(f"Failed to get initial balance: {e}")
         return
@@ -559,7 +534,16 @@ async def monitor_balance_changes(context: ContextTypes.DEFAULT_TYPE) -> None:
             # Reset error counter on successful request
             consecutive_errors = 0
             
-            # Check if balance changed
+            # Check for low balance warning
+            if current_balance <= LOW_BALANCE_THRESHOLD and not low_balance_warning_sent:
+                await send_low_balance_notification(context, current_balance)
+                low_balance_warning_sent = True
+            elif current_balance > LOW_BALANCE_THRESHOLD and low_balance_warning_sent:
+                # Reset low balance warning when balance goes above threshold
+                low_balance_warning_sent = False
+                logger.info(f"Balance recovered above threshold: {current_balance}")
+            
+            # Check if balance changed - send notification for ALL changes
             if last_known_balance is not None and current_balance != last_known_balance:
                 logger.info(f"Balance changed from {last_known_balance} to {current_balance}")
                 
@@ -568,39 +552,20 @@ async def monitor_balance_changes(context: ContextTypes.DEFAULT_TYPE) -> None:
                 action = "deposit" if change > 0 else "withdraw"
                 amount = abs(change)
                 
-                # Get the most recent transaction to determine activity
+                # Get recent transactions for context
                 try:
-                    transactions = await api.get_transactions(limit=1)
-                    if transactions:
-                        latest_transaction = transactions[0]
-                        activity = latest_transaction.get('name', 'external activity')
-                        
-                        # Check if this transaction is from the last few seconds (likely external)
-                        transaction_time = datetime.fromisoformat(
-                            latest_transaction['timestamp'].replace('Z', '+00:00')
-                        )
-                        time_diff = datetime.now(timezone.utc) - transaction_time
-                        
-                        # If transaction is recent (within check interval + 5 seconds), it's likely external
-                        if time_diff.total_seconds() <= (BALANCE_CHECK_INTERVAL + 5):
-                            # Send notification for external change
-                            await send_external_balance_notification(
-                                context, action, amount, activity, current_balance
-                            )
-                        else:
-                            # Old transaction, might be from our own bot action
-                            logger.info("Balance change detected but transaction is old, skipping notification")
-                    else:
-                        # No transactions found, send generic notification
-                        await send_external_balance_notification(
-                            context, action, amount, "external activity", current_balance
-                        )
+                    transactions = await api.get_transactions(limit=MAX_TRANSACTIONS_IN_NOTIFICATION)
+                    
+                    # Send notification for all balance changes with transaction details
+                    await send_balance_change_notification(
+                        context, action, amount, current_balance, transactions
+                    )
                         
                 except Exception as e:
                     logger.error(f"Error getting recent transactions: {e}")
-                    # Send generic notification anyway
-                    await send_external_balance_notification(
-                        context, action, amount, "external activity", current_balance
+                    # Send notification without transaction details
+                    await send_balance_change_notification(
+                        context, action, amount, current_balance, []
                     )
                 
                 # Update last known balance
@@ -617,24 +582,118 @@ async def monitor_balance_changes(context: ContextTypes.DEFAULT_TYPE) -> None:
             # Wait longer on error
             await asyncio.sleep(min(30, BALANCE_CHECK_INTERVAL * consecutive_errors))
 
-async def send_external_balance_notification(context: ContextTypes.DEFAULT_TYPE, action: str,
-                                           amount: int, activity: str, new_balance: int) -> None:
-    """Send notification for external balance changes."""
+async def send_low_balance_notification(context: ContextTypes.DEFAULT_TYPE, current_balance: int) -> None:
+    """Send low balance warning to registered chats."""
     try:
         # Get registered chats
         chats = await api.get_registered_chats()
         
+        if current_balance == 0:
+            notification_text = (
+                f"⚠️ **LOW BALANCE ALERT** ⚠️\n\n"
+                f"💰 Your balance is **{current_balance}** points!\n"
+                f"🚫 You're out of points!\n\n"
+                f"💡 **Suggestions:**\n"
+                f"• Complete a workout to earn points\n"
+                f"• Use `/deposit` to add points manually\n"
+                f"• Check `/transactions` to see recent activity\n\n"
+                f"⏰ {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
+            )
+        else:
+            notification_text = (
+                f"⚠️ **LOW BALANCE ALERT** ⚠️\n\n"
+                f"💰 Your balance is only **{current_balance}** points!\n"
+                f"📉 Balance is below the {LOW_BALANCE_THRESHOLD} point threshold.\n\n"
+                f"💡 **Suggestions:**\n"
+                f"• Complete a workout to earn more points\n"
+                f"• Use `/deposit` to add points manually\n"
+                f"• Check `/transactions` to see recent activity\n\n"
+                f"⏰ {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
+            )
+        
+        for chat_info in chats:
+            chat_id = chat_info['chat_id']
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=notification_text,
+                    parse_mode='Markdown'
+                )
+                
+            except Exception as e:
+                logger.warning(f"Failed to send low balance notification to chat {chat_id}: {e}")
+                # Try fallback without Markdown
+                try:
+                    fallback_text = notification_text.replace('*', '').replace('_', '')
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=fallback_text
+                    )
+                except Exception as e2:
+                    logger.error(f"Failed to send fallback low balance notification to chat {chat_id}: {e2}")
+        
+        logger.info(f"Low balance notification sent for balance: {current_balance}")
+    
+    except Exception as e:
+        logger.error(f"Error sending low balance notifications: {e}")
+
+async def send_balance_change_notification(context: ContextTypes.DEFAULT_TYPE, action: str,
+                                         amount: int, new_balance: int, transactions: list = None) -> None:
+    """Send notification for any balance change with recent transactions."""
+    try:
+        # Get registered chats
+        chats = await api.get_registered_chats()
+        
+        if not chats:
+            logger.info("No registered chats to send notifications to")
+            return
+        
         emoji = "💳" if action == 'withdraw' else "💎"
         action_text = "Withdrew" if action == 'withdraw' else "Deposited"
-        source_emoji = "🤖" if "hardware" in activity.lower() or "tracker" in activity.lower() else "🌐"
         
+        # Build the main notification
         notification_text = (
-            f"🔔 **External Balance Update** {source_emoji}\n\n"
+            f"🔔 **Balance Update** 📊\n\n"
             f"{emoji} {action_text} **{amount}** points\n"
-            f"🎯 Source: {activity.title()}\n"
             f"💰 New Balance: **{new_balance}** points\n"
-            f"⏰ {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
         )
+        
+        # Add transaction details if available
+        if transactions and len(transactions) > 0:
+            notification_text += "\n📋 **Recent Activity:**\n"
+            
+            for i, transaction in enumerate(transactions[:MAX_TRANSACTIONS_IN_NOTIFICATION]):
+                # Format timestamp
+                try:
+                    dt = datetime.fromisoformat(transaction['timestamp'].replace('Z', '+00:00'))
+                    formatted_time = dt.strftime('%H:%M:%S')
+                except:
+                    formatted_time = "Unknown"
+                
+                type_emoji = "➕" if transaction['type'] == 'deposit' else "➖"
+                count = transaction['count']
+                # Escape special Markdown characters in name
+                name = escape_markdown(transaction['name'])
+                
+                notification_text += f"{type_emoji} **{count}** pts - {name}\n"
+                notification_text += f"   ⏰ {formatted_time}\n"
+                
+                if i < min(len(transactions), MAX_TRANSACTIONS_IN_NOTIFICATION) - 1:
+                    notification_text += "\n"
+            
+            if len(transactions) > MAX_TRANSACTIONS_IN_NOTIFICATION:
+                notification_text += f"\n... and {len(transactions) - MAX_TRANSACTIONS_IN_NOTIFICATION} more"
+        else:
+            # No transactions available
+            notification_text += "\n📋 **Recent Activity:** No details available"
+        
+        # Add timestamp
+        notification_text += f"\n\n🕒 Updated: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
+        
+        # Add low balance warning if applicable
+        if new_balance <= LOW_BALANCE_THRESHOLD:
+            notification_text += f"\n\n⚠️ **LOW BALANCE WARNING**\nOnly {new_balance} points remaining!"
         
         current_time = datetime.now(timezone.utc)
         
@@ -642,8 +701,7 @@ async def send_external_balance_notification(context: ContextTypes.DEFAULT_TYPE,
             chat_id = chat_info['chat_id']
             
             try:
-                # Always send new message for external notifications
-                # (don't edit previous messages as these are important updates)
+                # Send notification
                 message = await context.bot.send_message(
                     chat_id=chat_id,
                     text=notification_text,
@@ -657,10 +715,19 @@ async def send_external_balance_notification(context: ContextTypes.DEFAULT_TYPE,
                 }
                 
             except Exception as e:
-                logger.warning(f"Failed to send external notification to chat {chat_id}: {e}")
+                logger.warning(f"Failed to send balance change notification to chat {chat_id}: {e}")
+                # Try sending without Markdown formatting as fallback
+                try:
+                    fallback_text = notification_text.replace('*', '').replace('_', '')
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=fallback_text
+                    )
+                except Exception as e2:
+                    logger.error(f"Failed to send fallback notification to chat {chat_id}: {e2}")
     
     except Exception as e:
-        logger.error(f"Error sending external notifications: {e}")
+        logger.error(f"Error sending balance change notifications: {e}")
 
 async def start_balance_monitoring(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start the balance monitoring task."""
@@ -688,40 +755,140 @@ async def stop_balance_monitoring() -> None:
             pass
         logger.info("Balance monitoring task stopped")
 
-async def monitoring_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Check the status of balance monitoring."""
-    global monitoring_task, last_known_balance
-    
-    if not BALANCE_MONITORING_ENABLED:
-        await update.message.reply_text(
-            "🔴 **Monitoring Status: DISABLED**\n\n"
-            "Balance monitoring is disabled via configuration.",
-            parse_mode='Markdown'
-        )
-        return
-    
-    status_emoji = "🟢" if monitoring_task and not monitoring_task.done() else "🔴"
-    status_text = "RUNNING" if monitoring_task and not monitoring_task.done() else "STOPPED"
-    
-    message = f"{status_emoji} **Monitoring Status: {status_text}**\n\n"
-    message += f"🔧 **Check Interval:** {BALANCE_CHECK_INTERVAL} seconds\n"
-    
-    if last_known_balance is not None:
-        message += f"💰 **Last Known Balance:** {last_known_balance} points\n"
-    
-    # Add restart button if monitoring is stopped
-    if not monitoring_task or monitoring_task.done():
-        keyboard = [[InlineKeyboardButton("🔄 Restart Monitoring", callback_data="restart_monitoring")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(message, parse_mode='Markdown', reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(message, parse_mode='Markdown')
-
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle unknown commands."""
     await update.message.reply_text(
         "❓ Unknown command. Type /help to see available commands."
     )
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle button callbacks from inline keyboards."""
+    query = update.callback_query
+    await query.answer()  # Acknowledge the callback
+    
+    callback_data = query.data
+    
+    try:
+        if callback_data.startswith("withdraw_"):
+            await handle_withdraw_callback(query, callback_data)
+        elif callback_data.startswith("deposit_"):
+            await handle_deposit_callback(query, callback_data)
+        else:
+            await query.edit_message_text("❌ Unknown action.")
+            
+    except Exception as e:
+        logger.error(f"Error handling button callback: {e}")
+        try:
+            await query.edit_message_text(
+                "❌ An error occurred while processing your request. Please try again."
+            )
+        except:
+            # If editing fails, send a new message
+            await query.message.reply_text(
+                "❌ An error occurred while processing your request. Please try again."
+            )
+
+async def handle_withdraw_callback(query, callback_data: str) -> None:
+    """Handle withdraw button callbacks."""
+    try:
+        # Parse callback data: withdraw_{activity}_{amount}
+        parts = callback_data.split("_")
+        if len(parts) < 3:
+            await query.edit_message_text("❌ Invalid withdraw data.")
+            return
+            
+        activity = parts[1]
+        amount = int(parts[2])
+        
+        # Map activity codes to display names
+        activity_names = {
+            'tv': 'Watching TV 📺',
+            'gaming': 'Gaming 🎮',
+            'snack': 'Snack Break 🍿',
+            'social': 'Social Media 📱',
+            'music': 'Music/Podcast 🎵',
+            'reading': 'Reading 📖',
+            'movie': 'Movie Time 🎬',
+            'coffee': 'Coffee Break ☕'
+        }
+        
+        activity_name = activity_names.get(activity, activity.title())
+        
+        # Perform the withdrawal
+        result = await api.withdraw_points(activity_name, amount)
+        
+        new_balance = result.get('balance', 'Unknown')
+        message = (
+            f"✅ **Withdrawal Successful!**\n\n"
+            f"💳 Withdrew **{amount}** points\n"
+            f"🎯 Activity: {activity_name}\n"
+            f"💰 New Balance: **{new_balance}** points\n"
+            f"⏰ {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
+        )
+        
+        await query.edit_message_text(message, parse_mode='Markdown')
+        
+    except ValueError:
+        await query.edit_message_text("❌ Invalid amount in withdraw data.")
+    except Exception as e:
+        logger.error(f"Error in withdraw callback: {e}")
+        if "insufficient" in str(e).lower() or "balance" in str(e).lower():
+            await query.edit_message_text(
+                f"❌ Insufficient balance to withdraw {amount} points.\n"
+                "Check your current balance with /balance"
+            )
+        else:
+            await query.edit_message_text(
+                f"❌ Failed to withdraw points: {str(e)}"
+            )
+
+async def handle_deposit_callback(query, callback_data: str) -> None:
+    """Handle deposit button callbacks."""
+    try:
+        # Parse callback data: deposit_{activity}_{amount}
+        parts = callback_data.split("_")
+        if len(parts) < 3:
+            await query.edit_message_text("❌ Invalid deposit data.")
+            return
+            
+        activity = parts[1]
+        amount = int(parts[2])
+        
+        # Map activity codes to display names
+        activity_names = {
+            'workout': 'Workout Complete 🏃‍♂️',
+            'cardio': 'Cardio Session 🚴‍♀️',
+            'strength': 'Strength Training 🏋️‍♂️',
+            'yoga': 'Yoga/Meditation 🧘‍♀️',
+            'walk': 'Daily Walk 🚶‍♂️',
+            'bonus': 'Manual Bonus 💪',
+            'goal': 'Goal Achievement 🎯',
+            'other': 'Other Activity 🔄'
+        }
+        
+        activity_name = activity_names.get(activity, activity.title())
+        
+        # Perform the deposit
+        result = await api.deposit_points(activity_name, amount)
+        
+        new_balance = result.get('balance', 'Unknown')
+        message = (
+            f"✅ **Deposit Successful!**\n\n"
+            f"💎 Deposited **{amount}** points\n"
+            f"🎯 Source: {activity_name}\n"
+            f"💰 New Balance: **{new_balance}** points\n"
+            f"⏰ {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
+        )
+        
+        await query.edit_message_text(message, parse_mode='Markdown')
+        
+    except ValueError:
+        await query.edit_message_text("❌ Invalid amount in deposit data.")
+    except Exception as e:
+        logger.error(f"Error in deposit callback: {e}")
+        await query.edit_message_text(
+            f"❌ Failed to deposit points: {str(e)}"
+        )
 
 async def post_init(application: Application) -> None:
     """Called after the application is initialized."""
@@ -729,10 +896,12 @@ async def post_init(application: Application) -> None:
     commands = [
         BotCommand("start", "Welcome message and instructions"),
         BotCommand("balance", "Check your current point balance"),
+        BotCommand("status", "Get detailed balance and activity status"),
         BotCommand("withdraw", "Withdraw points (usage: /withdraw {amount})"),
         BotCommand("deposit", "Add points manually (usage: /deposit {amount})"),
         BotCommand("transactions", "View recent transaction history"),
         BotCommand("register", "Register for balance change notifications"),
+        BotCommand("unregister", "Unregister from balance change notifications"),
         BotCommand("monitoring", "Check balance monitoring status"),
         BotCommand("help", "Show help message"),
     ]
@@ -765,11 +934,12 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("register", register))
+    application.add_handler(CommandHandler("unregister", unregister))
     application.add_handler(CommandHandler("balance", balance))
+    application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("deposit", deposit))
     application.add_handler(CommandHandler("transactions", transactions))
-    application.add_handler(CommandHandler("monitoring", monitoring_status))
     
     # Add callback query handler for buttons
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -783,10 +953,11 @@ def main() -> None:
     
     logger.info("Starting Fitness Rewards Telegram Bot...")
     logger.info(f"Server URL: {SERVER_URL}")
-    logger.info(f"Notification edit window: {NOTIFICATION_EDIT_WINDOW} minutes")
     logger.info(f"Balance monitoring: {'enabled' if BALANCE_MONITORING_ENABLED else 'disabled'}")
     if BALANCE_MONITORING_ENABLED:
         logger.info(f"Balance check interval: {BALANCE_CHECK_INTERVAL} seconds")
+        logger.info(f"Low balance threshold: {LOW_BALANCE_THRESHOLD} points")
+        logger.info(f"Max transactions in notifications: {MAX_TRANSACTIONS_IN_NOTIFICATION}")
     
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)

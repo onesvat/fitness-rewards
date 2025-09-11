@@ -41,6 +41,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ha_tv_consumer")
 
+# Debug: Log configuration values
+logger.info(f"Configuration loaded - SERVER_URL: {SERVER_URL}, API_KEY: {API_KEY[:10]}...")
+
 
 class DeviceConfig:
     """Configuration for a monitored Home Assistant media player device."""
@@ -157,7 +160,7 @@ class APIClient:
     async def get_balance(self) -> int:
         """Get current balance, return 0 if failed."""
         result = await self._request("GET", "/balance")
-        return result.get("balance", 0) if result else 0
+        return result.get("balance", 1) if result else 1
     
     async def withdraw_points(self, count: int) -> bool:
         """Withdraw points from balance, return True if successful."""
@@ -239,6 +242,7 @@ class DeviceMonitor:
     
     async def pause(self):
         """Pause playback on the device."""
+        
         try:
             await self.ha_client.call_service("media_player", "media_pause", self.config.entity_id)
             logger.info(f"Paused {self.config.name}")

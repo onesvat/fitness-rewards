@@ -1,5 +1,5 @@
-#include <WiFi.h>
-#include <HTTPClient.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
 
 // -- Configuration --
 const char* ssid = "YOUR_WIFI_SSID";
@@ -15,7 +15,8 @@ const char* apiKey = "your-secret-api-key-123";  // Must match the server's API 
 #define WIFI_RECONNECT_INTERVAL 20000 // Attempt to reconnect WiFi every 20 seconds
 
 // Specify which GPIO pin you connected to
-#define SENSOR_PIN 23
+#define SENSOR_PIN 4
+#define LED_PIN LED_BUILTIN  // Use the built-in LED (usually GPIO 2 on ESP8266)
 
 // volatile: Indicates that this variable can be changed within an interrupt.
 volatile unsigned long revolutionCounter = 0;
@@ -42,6 +43,11 @@ void ICACHE_RAM_ATTR revolutionDetected() {
     revolutionCounter++;
     lastInterruptTime = interruptTime;
     lastDebounceTime = interruptTime;
+    
+    // Blink LED to indicate revolution detected
+    digitalWrite(LED_PIN, LOW);   // Turn LED on (LOW is on for built-in LED)
+    delayMicroseconds(50000);     // Keep LED on for 50ms
+    digitalWrite(LED_PIN, HIGH);  // Turn LED off
   }
 }
 
@@ -74,16 +80,17 @@ void ensureWiFiConnected() {
     }
 }
 
-bool sendWebhook(int count = 0) {
+bool sendWebhook(int count) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected. Cannot send webhook.");
     return false;
   }
 
+  WiFiClient client;
   HTTPClient http;
   String url = String(webhookUrl) + "?name=" + deviceId + "&count=" + String(count);
 
-  http.begin(url);
+  http.begin(client, url);
   
   // Add API key authentication header
   http.addHeader("x-api-key", apiKey);
@@ -109,6 +116,10 @@ void setup() {
   Serial.begin(115200);
   Serial.println("\nFitness Tracker Initializing...");
 
+  // Initialize LED pin
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);  // Turn LED off initially (HIGH is off for built-in LED)
+
   setupWiFi();
 
   pinMode(SENSOR_PIN, INPUT_PULLUP);
@@ -119,7 +130,7 @@ void setup() {
 
 void handleRevolutionSending() {
   unsigned long currentTime = millis();
-  if (currentWorkoutState != STOPPED && (currentTime - lastRevolutionSendTime > REVOLUTION_SEND_INTERVAL)) {
+  if ((currentTime - lastRevolutionSendTime > REVOLUTION_SEND_INTERVAL)) {
     noInterrupts();
     unsigned long countToSend = revolutionCounter;
     interrupts();

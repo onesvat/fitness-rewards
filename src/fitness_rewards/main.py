@@ -226,6 +226,41 @@ def get_registered_chats(
     return chat_list
 
 
+@app.post("/unregister_chat", tags=["Telegram"])
+def unregister_chat(
+    chat_id: int = Query(..., description="Telegram chat ID"),
+    db: Session = Depends(get_db),
+    api_key: str = Depends(verify_api_key)
+):
+    """Unregister a Telegram chat from notifications."""
+    # Find the existing chat registration
+    existing_chat = db.query(ChatRegistration).filter(ChatRegistration.chat_id == chat_id).first()
+    
+    if not existing_chat:
+        return {
+            "status": "error",
+            "message": "Chat not found or already unregistered",
+            "chat_id": chat_id
+        }
+    
+    if existing_chat.is_active == 0:
+        return {
+            "status": "info",
+            "message": "Chat is already unregistered",
+            "chat_id": chat_id
+        }
+    
+    # Mark as inactive instead of deleting to preserve history
+    existing_chat.is_active = 0
+    db.commit()
+    
+    return {
+        "status": "success",
+        "message": "Chat unregistered successfully",
+        "chat_id": chat_id
+    }
+
+
 @app.get("/health", tags=["System"])
 def health_check():
     """Health check endpoint for monitoring."""
